@@ -1,4 +1,25 @@
+water_config = {
+    'name': 'water',
+    'atom_encoder': {'H2O': 0},          # Single particle type
+    'atom_decoder': ['H2O'],
+}
 
+'''
+Add once we have the data
+    'n_nodes': {                          # Example distribution (adjust based on MD data)
+        32: 1500,  16: 4200,  64: 750,
+        48: 2300,  24: 3800,  96: 150
+    },
+    'max_n_nodes': 96,                   # Max water molecules per sample
+    'atom_types': {0: 1_000_000},        # Total H2O particles in dataset
+    'distances': [                        # Modify based on water COM distances
+        250_000, 180_000, 95_000, 60_000,  # First 4 distance bins
+        *(np.linspace(50_000, 5_000, 92).astype(int)).tolist()
+    ],
+    'colors_dic': ['#1E90FF'],           # Blue for water molecules
+    'radius_dic': [1.2],                 # Ångström scale for water COM
+    'with_h': False                      # No individual hydrogen tracking
+    '''
 
 qm9_with_h = {
     'name': 'qm9',
@@ -150,5 +171,7 @@ def get_dataset_info(dataset_name, remove_h):
             return qm9_second_half
         else:
             raise Exception('Missing config for %s without hydrogens' % dataset_name)
+    elif dataset_name == "water":
+        return water_config
     else:
         raise Exception("Wrong dataset %s" % dataset_name)
