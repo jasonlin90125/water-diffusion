@@ -1,7 +1,8 @@
 import os
 import torch
-from torch.utils.data import Dataset, DataLoader, Subset
-from torch_geometric.data import Data
+from torch.utils.data import Dataset, Subset  # Standard PyTorch components
+from torch_geometric.data import Data  # PyG data structure
+from torch_geometric.loader import DataLoader  # PyG's optimized loader
 from torch_geometric.nn import MessagePassing
 from e3nn import o3
 from e3nn.nn import FullyConnectedNet
@@ -67,9 +68,10 @@ class RadiusGraphDataset(Dataset):
         # Get neighbor centers (already mass-weighted)
         neighbor_centers = frame_centers[neighbor_indices]
         
-        return {
-            "node_features": torch.tensor(neighbor_centers, dtype=torch.float32)
-        }
+        #return {
+        #    "node_features": torch.tensor(neighbor_centers, dtype=torch.float32)
+        #}
+        return Data(x=torch.tensor(neighbor_centers, dtype=torch.float32))
 
     def __del__(self):
         """Clean up memory map resources"""
@@ -87,7 +89,8 @@ class RadiusGraphDataset(Dataset):
         idx = frame_idx * self.molecules_per_frame + molecule_idx
 
         # Get the sample for this index
-        sample = self.__getitem__(idx)
+        sample = self.__getitem__(idx) # sample.x has shape (num_neighbors, 3)
+        print(f"Sample shape: {sample.x.shape}")
 
         # Print information about the chosen molecule
         with h5py.File(self.h5_path, 'r') as f:
@@ -103,14 +106,14 @@ class RadiusGraphDataset(Dataset):
         print(f"\nCenter of mass: {center_of_mass}")
 
         # Print number of neighbors
-        num_neighbors = sample["node_features"].shape[0]
+        num_neighbors = sample.x.shape[0]
         print(f"\nNumber of neighbors within {self.radius} nm radius: {num_neighbors}")
 
         # Optionally, print the first few neighbor coordinates
         if num_neighbors > 0:
             print("\nFirst few neighbor coordinates (center of mass):")
             for i in range(min(5, num_neighbors)):
-                print(f"Neighbor {i}: {sample['node_features'][i]}")
+                print(f"Neighbor {i}: {sample.x[i]}")
 
 def retrieve_dataloaders(cfg):
     if 'water' not in cfg.dataset:
