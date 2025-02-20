@@ -241,18 +241,6 @@ class EGNN_dynamics_water(nn.Module):
             return torch.cat([vel, h_final], dim=2)
 
     def get_adj_matrix(self, n_nodes, batch_size, device):
-        # Fully connected edges for inter-molecule interactions
-        rows, cols = [], []
-        for batch_idx in range(batch_size):
-            for i in range(n_nodes):
-                for j in range(n_nodes):
-                    if i != j:  # Exclude self-edges if desired
-                        rows.append(i + batch_idx * n_nodes)
-                        cols.append(j + batch_idx * n_nodes)
-        edges = [torch.LongTensor(rows).to(device), 
-                torch.LongTensor(cols).to(device)]
-        return edges
-        '''
         if n_nodes in self._edges_dict:
             edges_dic_b = self._edges_dict[n_nodes]
             if batch_size in edges_dic_b:
@@ -272,4 +260,3 @@ class EGNN_dynamics_water(nn.Module):
         else:
             self._edges_dict[n_nodes] = {}
             return self.get_adj_matrix(n_nodes, batch_size, device)
-        '''
