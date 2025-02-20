@@ -1,5 +1,6 @@
+# No utils as of now
+'''
 import torch
-
 
 def compute_mean_mad(dataloaders, properties, dataset_name):
     if dataset_name == 'qm9':
@@ -87,4 +88,4 @@ def prepare_context(conditioning, minibatch, property_norms):
     context = context * node_mask
     assert context.size(2) == context_node_nf
     return context
-
+'''

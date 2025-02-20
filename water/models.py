@@ -8,20 +8,21 @@ from equivariant_diffusion.en_diffusion import EnVariationalDiffusion
 
 
 def get_model(args, device, dataset_info, dataloader_train):
-    histogram = dataset_info['n_nodes']
+    #histogram = dataset_info['n_nodes']
     #in_node_nf = len(dataset_info['atom_decoder']) + int(args.include_charges)
     in_node_nf = 1  # Single particle type
-    nodes_dist = DistributionNodes(histogram)
+    #nodes_dist = DistributionNodes(histogram)
 
     # Remove charge-related logic
     if args.include_charges:
         raise ValueError("Charges not supported for water model")
 
     prop_dist = None
+    nodes_dist = None
+    '''
     if len(args.conditioning) > 0:
         prop_dist = DistributionProperty(dataloader_train, args.conditioning)
 
-    '''
     if args.condition_time:
         dynamics_in_node_nf = in_node_nf + 1
     else:
@@ -66,7 +67,7 @@ def get_optim(args, generative_model):
 
     return optim
 
-
+'''
 class DistributionNodes:
     def __init__(self, histogram):
 
@@ -180,10 +181,10 @@ class DistributionProperty:
         val = torch.rand(1) * (right - left) + left
         return val
 
-
 if __name__ == '__main__':
     dist_nodes = DistributionNodes()
     print(dist_nodes.n_nodes)
     print(dist_nodes.prob)
     for i in range(10):
         print(dist_nodes.sample())
+'''

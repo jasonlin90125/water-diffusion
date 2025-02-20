@@ -73,6 +73,8 @@ parser.add_argument('--sin_embedding', type=eval, default=False,
 parser.add_argument('--ode_regularization', type=float, default=1e-3)
 parser.add_argument('--dataset', type=str, default='water',
                     help='water | qm9 | qm9_second_half (train only on the last 50K samples of the training dataset)')
+parser.add_argument('--dataset_path', type=str, default='data/water/water.h5',
+                    help='Path to h5 file containing water positions.')
 parser.add_argument('--datadir', type=str, default='water/temp',
                     help='water data directory')
 parser.add_argument('--filter_n_atoms', type=int, default=None,
@@ -190,9 +192,8 @@ property_norms = None
 
 args.context_node_nf = context_node_nf
 
-
 # Create EGNN flow
-model, nodes_dist, prop_dist = get_model(args, device, dataset_info, dataloaders['train'])
+model, nodes_dist, prop_dist = get_model(args, device, dataset_info, dataloaders['train']) # nodes_dist currently None
 if prop_dist is not None:
     prop_dist.set_normalizer(property_norms)
 model = model.to(device)
@@ -201,13 +202,6 @@ optim = get_optim(args, model)
 
 gradnorm_queue = utils.Queue()
 gradnorm_queue.add(3000)  # Add large value that will be flushed.
-
-
-def check_mask_correct(variables, node_mask):
-    for variable in variables:
-        if len(variable) > 0:
-            assert_correctly_masked(variable, node_mask)
-
 
 def main():
     if args.resume is not None:
@@ -252,10 +246,10 @@ def main():
             if isinstance(model, en_diffusion.EnVariationalDiffusion):
                 wandb.log(model.log_info(), commit=True)
 
-            if not args.break_train_epoch:
-                analyze_and_save(args=args, epoch=epoch, model_sample=model_ema, nodes_dist=nodes_dist,
-                                 dataset_info=dataset_info, device=device,
-                                 prop_dist=prop_dist, n_samples=args.n_stability_samples)
+            #if not args.break_train_epoch:
+            #    analyze_and_save(args=args, epoch=epoch, model_sample=model_ema, nodes_dist=nodes_dist,
+            #                     dataset_info=dataset_info, device=device,
+            #                     prop_dist=prop_dist, n_samples=args.n_stability_samples)
             nll_val = test(args=args, loader=dataloaders['valid'], epoch=epoch, eval_model=model_ema_dp,
                            partition='Val', device=device, dtype=dtype, nodes_dist=nodes_dist,
                            property_norms=property_norms)
