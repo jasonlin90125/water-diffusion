@@ -20,10 +20,15 @@ def train_epoch(args, loader, epoch, model, model_dp, model_ema, ema, device, dt
     n_iterations = len(loader)
     for i, data in enumerate(loader):
         x = data['positions'].to(device, dtype)
+        print(f"x shape: {x.shape}")
         node_mask = data['atom_mask'].to(device, dtype).unsqueeze(2)
+        print(f"node_mask shape: {node_mask.shape}")
         edge_mask = data['edge_mask'].to(device, dtype)
+        print(f"edge_mask shape: {edge_mask.shape}")
         one_hot = data['one_hot'].to(device, dtype)
+        print(f"one_hot shape: {one_hot.shape}")
         charges = (data['charges'] if args.include_charges else torch.zeros(0)).to(device, dtype)
+        print(f"charges shape: {charges.shape}")
 
         x = remove_mean_with_mask(x, node_mask)
 
