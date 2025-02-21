@@ -11,7 +11,7 @@ def assert_correctly_masked(variable, node_mask):
 
 
 def compute_loss_and_nll(args, generative_model, nodes_dist, x, h, node_mask, edge_mask, context):
-    bs, n_nodes, n_dims = x.size()
+    #bs, n_nodes, n_dims = x.size()
 
 
     if args.probabilistic_model == 'diffusion':
@@ -23,12 +23,12 @@ def compute_loss_and_nll(args, generative_model, nodes_dist, x, h, node_mask, ed
         # 'categorical' and 'integer'.
         nll = generative_model(x, h, node_mask, edge_mask, context)
 
-        N = node_mask.squeeze(2).sum(1).long()
+        #N = node_mask.squeeze(2).sum(1).long()
 
-        log_pN = nodes_dist.log_prob(N)
+        #log_pN = nodes_dist.log_prob(N)
 
-        assert nll.size() == log_pN.size()
-        nll = nll - log_pN
+        #assert nll.size() == log_pN.size()
+        #nll = nll - log_pN
 
         # Average over batch.
         nll = nll.mean(0)

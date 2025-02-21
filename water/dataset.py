@@ -1,9 +1,9 @@
 import os
 import torch
-from torch.utils.data import Dataset, Subset  # Standard PyTorch components
-from torch_geometric.data import Data  # PyG data structure
-from torch_geometric.loader import DataLoader  # PyG's optimized loader
-from torch_geometric.nn import MessagePassing
+from torch.utils.data import Dataset, Subset, DataLoader  # Standard PyTorch components
+#from torch_geometric.data import Data  # PyG data structure
+#from torch_geometric.loader import DataLoader  # PyG's optimized loader
+#from torch_geometric.nn import MessagePassing
 from e3nn import o3
 from e3nn.nn import FullyConnectedNet
 from e3nn.o3 import Irreps
@@ -71,7 +71,8 @@ class RadiusGraphDataset(Dataset):
         #return {
         #    "node_features": torch.tensor(neighbor_centers, dtype=torch.float32)
         #}
-        return Data(x=torch.tensor(neighbor_centers, dtype=torch.float32))
+        #return Data(x=torch.tensor(neighbor_centers, dtype=torch.float32))
+        return torch.from_numpy(neighbor_centers).float()
 
     def __del__(self):
         """Clean up memory map resources"""
@@ -90,7 +91,7 @@ class RadiusGraphDataset(Dataset):
 
         # Get the sample for this index
         sample = self.__getitem__(idx) # sample.x has shape (num_neighbors, 3)
-        print(f"Sample shape: {sample.x.shape}")
+        print(f"Sample shape: {sample.shape}")
 
         # Print information about the chosen molecule
         with h5py.File(self.h5_path, 'r') as f:
@@ -106,14 +107,56 @@ class RadiusGraphDataset(Dataset):
         print(f"\nCenter of mass: {center_of_mass}")
 
         # Print number of neighbors
-        num_neighbors = sample.x.shape[0]
+        num_neighbors = sample.shape[0]
         print(f"\nNumber of neighbors within {self.radius} nm radius: {num_neighbors}")
 
         # Optionally, print the first few neighbor coordinates
         if num_neighbors > 0:
             print("\nFirst few neighbor coordinates (center of mass):")
             for i in range(min(5, num_neighbors)):
-                print(f"Neighbor {i}: {sample.x[i]}")
+                print(f"Neighbor {i}: {sample[i]}")
+
+def collate_fn(batch):
+# Find max number of nodes in this batch
+    max_nodes = max([item.shape[0] for item in batch])
+    feat_dim = batch[0].shape[-1]  # Should be 3 for [N, 3]
+
+    # Pad each sample to max_nodes with zeros
+    padded_batch = []
+    for item in batch:
+        padding = max_nodes - item.shape[0]
+        padded = torch.cat([
+            item, 
+            torch.zeros((padding, feat_dim), dtype=item.dtype)
+        ], dim=0)
+        padded_batch.append(padded)
+
+    # Stack padded tensors [B, max_nodes, 3]
+    batch_tensor = torch.stack(padded_batch, dim=0)
+
+    # Create atom mask (1 for real nodes, 0 for padding)
+    atom_mask = (batch_tensor.abs().sum(dim=-1) > 0).float()  # [B, max_nodes]
+
+    # Create edge mask (excluding padding and self-edges)
+    B, N, _ = batch_tensor.shape
+    device = batch_tensor.device
+    
+    # Valid connections between real atoms
+    edge_mask = (atom_mask.unsqueeze(1) * atom_mask.unsqueeze(2))  # [B, N, N]
+    
+    # Remove self-edges
+    diag_mask = ~torch.eye(N, dtype=torch.bool, device=device).unsqueeze(0)
+    edge_mask *= diag_mask
+    
+    # Reshape for compatibility
+    edge_mask = edge_mask.view(B * N * N, 1)
+
+    return {
+        'positions': batch_tensor,
+        'atom_mask': atom_mask,
+        'edge_mask': edge_mask,
+        #'charges': torch.zeros_like(batch_tensor[..., :1]),
+    }
 
 def retrieve_dataloaders(cfg):
     if 'water' not in cfg.dataset:
@@ -138,7 +181,8 @@ def retrieve_dataloaders(cfg):
     loader_args = {
         'batch_size': cfg.batch_size,
         'num_workers': cfg.num_workers,
-        'pin_memory': True
+        'pin_memory': True,
+        'collate_fn': collate_fn
     }
     
     dataloaders = {

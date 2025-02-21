@@ -18,7 +18,7 @@ from equivariant_diffusion import utils as flow_utils
 import torch
 import time
 import pickle
-from train_test_water import train_epoch, test, analyze_and_save
+from train_test_water import train_epoch, test #, analyze_and_save
 
 parser = argparse.ArgumentParser(description='E3Diffusion')
 parser.add_argument('--exp_name', type=str, default='debug_10')
@@ -77,6 +77,8 @@ parser.add_argument('--dataset_path', type=str, default='data/water/water.h5',
                     help='Path to h5 file containing water positions.')
 parser.add_argument('--datadir', type=str, default='water/temp',
                     help='water data directory')
+parser.add_argument('--radius', type=float, default=0.5,
+                    help='Radius of the cutoff sphere in nanometers.')
 parser.add_argument('--filter_n_atoms', type=int, default=None,
                     help='When set to an integer value, QM9 will only contain molecules of that amount of atoms')
 parser.add_argument('--dequantization', type=str, default='argmax_variational',
@@ -172,7 +174,8 @@ wandb.init(**kwargs)
 wandb.save('*.txt')
 
 # Retrieve water dataloaders
-dataloaders, charge_scale = dataset.retrieve_dataloaders(args)
+#dataloaders, charge_scale = dataset.retrieve_dataloaders(args)
+dataloaders = dataset.retrieve_dataloaders(args)
 
 data_dummy = next(iter(dataloaders['train']))
 

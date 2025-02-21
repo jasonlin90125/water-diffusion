@@ -3,7 +3,7 @@
 #SBATCH --output=edm_train.out
 #SBATCH --error=edm_train.err
 #SBATCH -p volta-gpu
-#SBATCH --gres=gpu:8
+#SBATCH --gres=gpu:2
 #SBATCH -n 1
 #SBATCH --cpus-per-task=8
 #SBATCH --time=3-00:00:00
