@@ -21,15 +21,15 @@ def train_epoch(args, loader, epoch, model, model_dp, model_ema, ema, device, dt
     n_iterations = len(loader)
     for i, batch in enumerate(loader):
         x = batch['positions'].to(device, dtype) # [B, N, 3]
-        print(f"x shape: {x.shape}")
-        print(f"x: {x}")
+        #print(f"x shape: {x.shape}")
+        #print(f"x: {x}")
         node_mask = batch['atom_mask'].to(device, dtype).unsqueeze(2) # [B, N, 1]
-        print(f"Node_mask shape: {node_mask.shape}")
-        print(f"Node_mask: {node_mask}")
+        #print(f"Node_mask shape: {node_mask.shape}")
+        #print(f"Node_mask: {node_mask}")
         edge_mask = batch['edge_mask'].to(device, dtype) # [B*N*N, 1]
-        print(f"Edge_mask shape: {edge_mask.shape}")
-        print(f"Edge_mask: {edge_mask}")
-        one_hot = torch.zeros_like(x, dtype=dtype, device=device)
+        #print(f"Edge_mask shape: {edge_mask.shape}")
+        #print(f"Edge_mask: {edge_mask}")
+        #one_hot = torch.ones_like(x, dtype=dtype, device=device) # [B, N, 3]
         charges = torch.zeros(0).to(device, dtype)
         '''
     for i, data in enumerate(loader):
@@ -58,7 +58,8 @@ def train_epoch(args, loader, epoch, model, model_dp, model_ema, ema, device, dt
         #check_mask_correct([x, one_hot, charges], node_mask)
         #assert_mean_zero_with_mask(x, node_mask)
 
-        h = {'categorical': one_hot, 'integer': charges}
+        #h = {'categorical': one_hot, 'integer': charges}
+        h = {'categorical': node_mask, 'integer': charges}
 
         '''
         if len(args.conditioning) > 0:

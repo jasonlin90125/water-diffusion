@@ -603,7 +603,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         # Sample z_t given x, h for timestep t, from q(z_t | x, h)
         z_t = alpha_t * xh + sigma_t * eps
 
-        diffusion_utils.assert_mean_zero_with_mask(z_t[:, :, :self.n_dims], node_mask)
+        diffusion_utils.assert_mean_zero_with_mask(z_t[:, :, :self.n_dims], node_mask) # ERROR
 
         # Neural net prediction.
         net_out = self.phi(z_t, t, node_mask, edge_mask, context)
