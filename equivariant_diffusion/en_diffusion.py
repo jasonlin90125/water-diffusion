@@ -594,6 +594,9 @@ class EnVariationalDiffusion(torch.nn.Module):
         alpha_t = self.alpha(gamma_t, x)
         sigma_t = self.sigma(gamma_t, x)
 
+        print('alpha_t', alpha_t)
+        print('sigma_t', sigma_t)
+
         # Sample zt ~ Normal(alpha_t x, sigma_t)
         eps = self.sample_combined_position_feature_noise(
             n_samples=x.size(0), n_nodes=x.size(1), node_mask=node_mask)
@@ -603,6 +606,10 @@ class EnVariationalDiffusion(torch.nn.Module):
         # Sample z_t given x, h for timestep t, from q(z_t | x, h)
         z_t = alpha_t * xh + sigma_t * eps
 
+        if torch.isnan(z_t[:, :, :self.n_dims]).any():
+            print("Found NaNs!!!")
+        else:
+            print("No NaNs.")
         diffusion_utils.assert_mean_zero_with_mask(z_t[:, :, :self.n_dims], node_mask) # ERROR
 
         # Neural net prediction.

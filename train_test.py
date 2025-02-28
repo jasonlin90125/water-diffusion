@@ -26,6 +26,7 @@ def train_epoch(args, loader, epoch, model, model_dp, model_ema, ema, device, dt
         print(f"node_mask: {node_mask}")
         edge_mask = data['edge_mask'].to(device, dtype)
         print(f"edge_mask shape: {edge_mask.shape}")
+        print(f"edge_mask: {edge_mask}")
         one_hot = data['one_hot'].to(device, dtype)
         print(f"one_hot shape: {one_hot.shape}")
         print(f"one_hot: {one_hot}")

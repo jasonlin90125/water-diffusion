@@ -10,11 +10,13 @@ from e3nn.o3 import Irreps
 from ase.io import read
 import numpy as np
 import h5py
+from scipy.spatial import cKDTree
 
 class RadiusGraphDataset(Dataset):
     def __init__(self, h5_path, radius): 
         self.h5_path = h5_path
         self.radius = radius # radius in nM
+        self.box_size = np.array([4.0, 4.0, 4.0], dtype=np.float32)  # Box size in nm TODO: Calculate from dataset
         self.masses = torch.tensor([15.999, 1.008, 1.008], dtype=torch.float32)  # O, H, H
         
         with h5py.File(h5_path, 'r') as f:
@@ -56,6 +58,27 @@ class RadiusGraphDataset(Dataset):
 
     def __getitem__(self, idx):
         frame_idx, center_idx = divmod(idx, self.molecules_per_frame)
+    
+        # Load precomputed centers for this frame
+        frame_centers = self.com[frame_idx]
+        center_pos = frame_centers[center_idx]
+        
+        # Calculate distances and find neighbors
+        distances = np.linalg.norm(frame_centers - center_pos, axis=1)
+        neighbor_indices = np.where(distances < self.radius)[0]
+        neighbor_centers = frame_centers[neighbor_indices]
+        
+        # Combine neighbors + center into single array
+        all_points = np.vstack([neighbor_centers, center_pos])  # Shape: (N+1,3)
+        
+        # Compute mean and shift coordinates
+        mean_xyz = np.mean(all_points, axis=0)
+        shifted_points = all_points - mean_xyz
+        
+        # Convert to PyTorch tensors
+        return torch.from_numpy(shifted_points).float()
+        ''' Original code
+        frame_idx, center_idx = divmod(idx, self.molecules_per_frame)
         
         # Load precomputed centers for this frame
         frame_centers = self.com[frame_idx]
@@ -73,6 +96,30 @@ class RadiusGraphDataset(Dataset):
         #}
         #return Data(x=torch.tensor(neighbor_centers, dtype=torch.float32))
         return torch.from_numpy(neighbor_centers).float()
+        '''
+
+        ''' Boundary conditions
+        frame_idx, center_idx = divmod(idx, self.molecules_per_frame)
+        frame_centers = self.com[frame_idx]
+        box_size = self.box_size
+        
+        # 1. Wrap coordinates into [0, box_size) for each dimension
+        wrapped_centers = np.mod(frame_centers, box_size)
+        
+        # 2. Verify coordinate bounds before building tree
+        if np.any(wrapped_centers < 0) or np.any(wrapped_centers >= box_size):
+            raise ValueError("Coordinates still outside box after wrapping")
+
+        # 3. Create PBC-aware KDTree
+        tree = cKDTree(wrapped_centers, boxsize=box_size)
+        
+        # 4. Query neighbors with PBC
+        neighbors = tree.query_ball_point(wrapped_centers[center_idx], self.radius)
+        neighbors = [i for i in neighbors if i != center_idx]  # Exclude self
+        
+        neighbor_centers = wrapped_centers[neighbors]
+        return torch.from_numpy(neighbor_centers).float()
+        '''
 
     def __del__(self):
         """Clean up memory map resources"""
@@ -84,9 +131,9 @@ class RadiusGraphDataset(Dataset):
                 pass
     
     def test(self):
-        # Choose the first frame (frame_idx = 0) and the 1000th water molecule
+        # Choose the first frame (frame_idx = 0) and the nth water molecule
         frame_idx = 0
-        molecule_idx = 1000
+        molecule_idx = 647
         idx = frame_idx * self.molecules_per_frame + molecule_idx
 
         # Get the sample for this index
@@ -113,7 +160,7 @@ class RadiusGraphDataset(Dataset):
         # Optionally, print the first few neighbor coordinates
         if num_neighbors > 0:
             print("\nFirst few neighbor coordinates (center of mass):")
-            for i in range(min(5, num_neighbors)):
+            for i in range(num_neighbors):
                 print(f"Neighbor {i}: {sample[i]}")
 
 def collate_fn(batch):
