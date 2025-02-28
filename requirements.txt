@@ -5,3 +5,7 @@ torch
 torchvision
 tqdm
 wandb
+e3nn
+ase
+h5py
+rdkit
