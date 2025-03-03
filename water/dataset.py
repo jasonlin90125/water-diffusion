@@ -67,6 +67,8 @@ class RadiusGraphDataset(Dataset):
         distances = np.linalg.norm(frame_centers - center_pos, axis=1)
         neighbor_indices = np.where(distances < self.radius)[0]
         neighbor_centers = frame_centers[neighbor_indices]
+
+        assert len(neighbor_centers) > 0, "Found no neighbors within the specified radius"
         
         # Combine neighbors + center into single array
         all_points = np.vstack([neighbor_centers, center_pos])  # Shape: (N+1,3)
@@ -76,7 +78,10 @@ class RadiusGraphDataset(Dataset):
         shifted_points = all_points - mean_xyz
         
         # Convert to PyTorch tensors
-        return torch.from_numpy(shifted_points).float()
+        return {
+            'coordinates': torch.from_numpy(shifted_points).float(),
+            'num_nodes': len(shifted_points)
+        }
         ''' Original code
         frame_idx, center_idx = divmod(idx, self.molecules_per_frame)
         
@@ -164,25 +169,30 @@ class RadiusGraphDataset(Dataset):
                 print(f"Neighbor {i}: {sample[i]}")
 
 def collate_fn(batch):
-# Find max number of nodes in this batch
-    max_nodes = max([item.shape[0] for item in batch])
-    feat_dim = batch[0].shape[-1]  # Should be 3 for [N, 3]
-
-    # Pad each sample to max_nodes with zeros
+    # Extract lengths and coordinates separately
+    lengths = [x['num_nodes'] for x in batch]
+    coord_list = [x['coordinates'] for x in batch]
+    
+    # Find padding requirements
+    max_nodes = max(lengths)
+    feat_dim = coord_list[0].shape[-1]
+    
+    # Pad coordinates
     padded_batch = []
-    for item in batch:
-        padding = max_nodes - item.shape[0]
+    for coords in coord_list:
+        padding = max_nodes - coords.shape[0]
         padded = torch.cat([
-            item, 
-            torch.zeros((padding, feat_dim), dtype=item.dtype)
+            coords,
+            torch.zeros((padding, feat_dim), dtype=coords.dtype)
         ], dim=0)
         padded_batch.append(padded)
-
-    # Stack padded tensors [B, max_nodes, 3]
+    
     batch_tensor = torch.stack(padded_batch, dim=0)
-
-    # Create atom mask (1 for real nodes, 0 for padding)
-    atom_mask = (batch_tensor.abs().sum(dim=-1) > 0).float()  # [B, max_nodes]
+    
+    # Create perfect mask using original lengths
+    atom_mask = torch.zeros_like(batch_tensor[..., 0])  # [B, N]
+    for i, l in enumerate(lengths):
+        atom_mask[i, :l] = 1.0  # First 'l' nodes are real
 
     # Create edge mask (excluding padding and self-edges)
     B, N, _ = batch_tensor.shape

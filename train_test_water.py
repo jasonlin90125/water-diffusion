@@ -82,7 +82,7 @@ def train_epoch(args, loader, epoch, model, model_dp, model_ema, ema, device, dt
                                                                 x, h, node_mask, edge_mask, context)
         # standard nll from forward KL
         loss = nll + args.ode_regularization * reg_term
-        loss.backward()
+        #loss.backward()
 
         if args.clip_grad:
             grad_norm = utils.gradient_clipping(model, gradnorm_queue)

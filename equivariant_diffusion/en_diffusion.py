@@ -603,11 +603,17 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         # Concatenate x, h[integer] and h[categorical].
         xh = torch.cat([x, h['categorical'], h['integer']], dim=2)
+        if torch.isnan(eps).any():
+            print(f'x.size(0): {x.size(0)}, x.size(1): {x.size(1)}')
+            print("Found NaNs!!!")
+            print(f'NaNs found in eps at indices: {torch.isnan(eps).nonzero()}')
+            print(f'xh at NaNs indices: {xh[torch.isnan(eps).nonzero(as_tuple=True)]}')
+            print(f"xh: {xh}")
         # Sample z_t given x, h for timestep t, from q(z_t | x, h)
         z_t = alpha_t * xh + sigma_t * eps
 
-        if torch.isnan(z_t[:, :, :self.n_dims]).any():
-            print("Found NaNs!!!")
+        #if torch.isnan(z_t[:, :, :self.n_dims]).any():
+        #    print("Found NaNs!!!")
         diffusion_utils.assert_mean_zero_with_mask(z_t[:, :, :self.n_dims], node_mask) # ERROR
 
         # Neural net prediction.
