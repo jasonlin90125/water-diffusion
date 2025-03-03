@@ -13,118 +13,90 @@ import h5py
 from scipy.spatial import cKDTree
 
 class RadiusGraphDataset(Dataset):
-    def __init__(self, h5_path, radius): 
+    def __init__(self, h5_path, radius):
         self.h5_path = h5_path
-        self.radius = radius # radius in nM
-        self.box_size = np.array([4.0, 4.0, 4.0], dtype=np.float32)  # Box size in nm TODO: Calculate from dataset
-        self.masses = torch.tensor([15.999, 1.008, 1.008], dtype=torch.float32)  # O, H, H
+        self.radius = radius  # radius in nm
+        self.box_size = np.array([4.0, 4.0, 4.0], dtype=np.float32)
+        self.masses = torch.tensor([15.999, 1.008, 1.008], dtype=torch.float32)
+        
+        # Calculate inner box boundaries for valid centers
+        self.inner_box_min = np.zeros(3, dtype=np.float32) + self.radius
+        self.inner_box_max = self.box_size - self.radius
         
         with h5py.File(h5_path, 'r') as f:
             pos_dataset = f['positions']
-            self.num_frames, atoms_per_frame, _ = pos_dataset.shape
-            if atoms_per_frame % 3 != 0:
-                raise ValueError("Number of atoms per frame must be divisible by 3")
+            #self.num_frames, atoms_per_frame, _ = pos_dataset.shape
+            _, atoms_per_frame, _ = pos_dataset.shape
+            # Hard code num_frames to limit data size
+            self.num_frames = 145
+            self.molecules_per_frame = atoms_per_frame // 3
             
-            self.molecules_per_frame = molecules_per_frame = atoms_per_frame // 3
-            self.total_samples = self.num_frames * molecules_per_frame
-            
-        # Precompute mass-weighted centers
+        # Precompute mass centers and valid center indices
         self._precompute_mass_centers()
-        
+        self._precompute_valid_centers()
+
     def _precompute_mass_centers(self):
-        """
-        Precompute mass-weighted centers for all molecules using memory mapping
-        Let f = number of frames, m = number of molecules
-        """
-        self.com_shape = (self.num_frames, self.molecules_per_frame, 3) # (f, m, 3)
+        """Mass center calculation"""
+        self.com_shape = (self.num_frames, self.molecules_per_frame, 3)
         self.com = np.memmap('com.dat', dtype='float32', mode='w+', shape=self.com_shape)
         
         with h5py.File(self.h5_path, 'r') as f:
             for frame_idx in range(self.num_frames):
-                frame_data = f['positions'][frame_idx]  # (m*3, 3)
-                reshaped = frame_data.reshape(-1, 3, 3)  # (m, 3, 3)
+                frame_data = f['positions'][frame_idx]
+                reshaped = frame_data.reshape(-1, 3, 3)
                 
-                # Mass-weighted center calculation
-                masses_expanded = self.masses.numpy()[:, None]  # (3,) -> (3, 1)
-                weighted = reshaped * masses_expanded  # (m, 3, 3)
-                summed = weighted.sum(axis=1)  # (m, 3)
-                computed = (summed / self.masses.numpy().sum()).astype(np.float32)  # (m, 3)
-                self.com[frame_idx] = np.asarray(computed, dtype=np.float32, copy=False)  # (m, 3)
+                masses_expanded = self.masses.numpy()[:, None]
+                weighted = reshaped * masses_expanded
+                summed = weighted.sum(axis=1)
+                computed = (summed / self.masses.numpy().sum()).astype(np.float32)
+                self.com[frame_idx] = computed
                 
         self.com.flush()
+
+    def _precompute_valid_centers(self):
+        """Precompute valid center indices within inner box"""
+        self.valid_centers = []
+        for frame_idx in range(self.num_frames):
+            centers = self.com[frame_idx]
+            
+            # Find centers within inner box [radius, box_size - radius] in all dimensions
+            valid_mask = (
+                (centers[:, 0] >= self.inner_box_min[0]) & 
+                (centers[:, 0] <= self.inner_box_max[0]) &
+                (centers[:, 1] >= self.inner_box_min[1]) & 
+                (centers[:, 1] <= self.inner_box_max[1]) &
+                (centers[:, 2] >= self.inner_box_min[2]) & 
+                (centers[:, 2] <= self.inner_box_max[2])
+            )
+            
+            self.valid_centers.extend(
+                [(frame_idx, idx) for idx in np.where(valid_mask)[0]]
+            )
+            
+        self.total_samples = len(self.valid_centers)
 
     def __len__(self):
         return self.total_samples
 
     def __getitem__(self, idx):
-        frame_idx, center_idx = divmod(idx, self.molecules_per_frame)
-    
-        # Load precomputed centers for this frame
+        frame_idx, center_idx = self.valid_centers[idx]
         frame_centers = self.com[frame_idx]
         center_pos = frame_centers[center_idx]
         
-        # Calculate distances and find neighbors
+        # Regular distance calculation (no periodic boundaries)
         distances = np.linalg.norm(frame_centers - center_pos, axis=1)
         neighbor_indices = np.where(distances < self.radius)[0]
         neighbor_centers = frame_centers[neighbor_indices]
 
-        assert len(neighbor_centers) > 0, "Found no neighbors within the specified radius"
-        
-        # Combine neighbors + center into single array
-        all_points = np.vstack([neighbor_centers, center_pos])  # Shape: (N+1,3)
-        
-        # Compute mean and shift coordinates
+        # Combine neighbors + center
+        all_points = np.vstack([neighbor_centers, center_pos])
         mean_xyz = np.mean(all_points, axis=0)
         shifted_points = all_points - mean_xyz
         
-        # Convert to PyTorch tensors
         return {
             'coordinates': torch.from_numpy(shifted_points).float(),
             'num_nodes': len(shifted_points)
         }
-        ''' Original code
-        frame_idx, center_idx = divmod(idx, self.molecules_per_frame)
-        
-        # Load precomputed centers for this frame
-        frame_centers = self.com[frame_idx]
-        center_pos = frame_centers[center_idx]
-        
-        # Calculate distances using precomputed centers
-        distances = np.linalg.norm(frame_centers - center_pos, axis=1)
-        neighbor_indices = np.where(distances < self.radius)[0]
-        
-        # Get neighbor centers (already mass-weighted)
-        neighbor_centers = frame_centers[neighbor_indices]
-        
-        #return {
-        #    "node_features": torch.tensor(neighbor_centers, dtype=torch.float32)
-        #}
-        #return Data(x=torch.tensor(neighbor_centers, dtype=torch.float32))
-        return torch.from_numpy(neighbor_centers).float()
-        '''
-
-        ''' Boundary conditions
-        frame_idx, center_idx = divmod(idx, self.molecules_per_frame)
-        frame_centers = self.com[frame_idx]
-        box_size = self.box_size
-        
-        # 1. Wrap coordinates into [0, box_size) for each dimension
-        wrapped_centers = np.mod(frame_centers, box_size)
-        
-        # 2. Verify coordinate bounds before building tree
-        if np.any(wrapped_centers < 0) or np.any(wrapped_centers >= box_size):
-            raise ValueError("Coordinates still outside box after wrapping")
-
-        # 3. Create PBC-aware KDTree
-        tree = cKDTree(wrapped_centers, boxsize=box_size)
-        
-        # 4. Query neighbors with PBC
-        neighbors = tree.query_ball_point(wrapped_centers[center_idx], self.radius)
-        neighbors = [i for i in neighbors if i != center_idx]  # Exclude self
-        
-        neighbor_centers = wrapped_centers[neighbors]
-        return torch.from_numpy(neighbor_centers).float()
-        '''
 
     def __del__(self):
         """Clean up memory map resources"""
@@ -136,37 +108,14 @@ class RadiusGraphDataset(Dataset):
                 pass
     
     def test(self):
-        # Choose the first frame (frame_idx = 0) and the nth water molecule
-        frame_idx = 0
-        molecule_idx = 647
-        idx = frame_idx * self.molecules_per_frame + molecule_idx
+        # Example test to visualize a sample
+        idx = 0
 
         # Get the sample for this index
-        sample = self.__getitem__(idx) # sample.x has shape (num_neighbors, 3)
-        print(f"Sample shape: {sample.shape}")
-
-        # Print information about the chosen molecule
-        with h5py.File(self.h5_path, 'r') as f:
-            frame_data = f['positions'][frame_idx]
-            molecule_data = frame_data[molecule_idx*3:(molecule_idx+1)*3]
-            
-        print(f"Water molecule {molecule_idx} in frame {frame_idx}:")
-        print(f"Oxygen  (O): {molecule_data[0]}")
-        print(f"Hydrogen (H): {molecule_data[1]}")
-        print(f"Hydrogen (H): {molecule_data[2]}")
-        
-        center_of_mass = self.com[frame_idx, molecule_idx]
-        print(f"\nCenter of mass: {center_of_mass}")
-
-        # Print number of neighbors
-        num_neighbors = sample.shape[0]
-        print(f"\nNumber of neighbors within {self.radius} nm radius: {num_neighbors}")
-
-        # Optionally, print the first few neighbor coordinates
-        if num_neighbors > 0:
-            print("\nFirst few neighbor coordinates (center of mass):")
-            for i in range(num_neighbors):
-                print(f"Neighbor {i}: {sample[i]}")
+        sample = self.__getitem__(idx)
+        print(f"Coordinates: {sample['coordinates']}")
+        print(f"Number of nodes: {sample['num_nodes']}")
+        print(f"Total samples: {self.total_samples}")
 
 def collate_fn(batch):
     # Extract lengths and coordinates separately

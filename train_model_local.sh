@@ -9,7 +9,7 @@ export CUDA_VISIBLE_DEVICES=0,1
 rm -f water_diffusion.log
 
 python main_water.py \
-    --n_epochs 3000 \
+    --n_epochs 1000 \
     --exp_name edm_water \
     --n_stability_samples 1000 \
     --diffusion_noise_schedule polynomial_2 \
