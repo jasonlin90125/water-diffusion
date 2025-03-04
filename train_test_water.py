@@ -24,18 +24,10 @@ def train_epoch(args, loader, epoch, model, model_dp, model_ema, ema, device, dt
         x = batch['positions'].to(device, dtype) # [B, N, 3]
         if torch.isnan(x).any():
             raise ValueError("NaN detected in input data!")
-        #print(f"x shape: {x.shape}")
-        #print(f"x: {x}")
         node_mask = batch['atom_mask'].to(device, dtype).unsqueeze(2) # [B, N, 1]
-        #print(f"Node_mask shape: {node_mask.shape}")
-        #print(f"Node_mask: {node_mask}")
         edge_mask = batch['edge_mask'].to(device, dtype) # [B*N*N, 1]
-        #print(f"Edge_mask shape: {edge_mask.shape}")
-        #print(f"Edge_mask: {edge_mask}")
         one_hot = torch.ones_like(x, dtype=dtype, device=device) # [B, N, 3]
         one_hot = node_mask.clone() # [B, N, 1]
-        #print(f"One_hot shape: {one_hot.shape}")
-        #print(f"One_hot: {one_hot}")
         charges = torch.zeros(0).to(device, dtype)
         '''
     for i, data in enumerate(loader):
@@ -141,11 +133,14 @@ def test(args, loader, epoch, eval_model, device, dtype, property_norms, nodes_d
 
         n_iterations = len(loader)
         for i, batch in enumerate(loader):
-            x = batch.x.to(device, dtype)
-            batch_size = x.size(0)
-            node_mask = None
-            edge_mask = None
-            one_hot = torch.ones_like(x, dtype=dtype, device=device)
+            x = batch['positions'].to(device, dtype) # [B, N, 3]
+            batch_size = x.shape[0]
+            if torch.isnan(x).any():
+                raise ValueError("NaN detected in input data!")
+            node_mask = batch['atom_mask'].to(device, dtype).unsqueeze(2) # [B, N, 1]
+            edge_mask = batch['edge_mask'].to(device, dtype) # [B*N*N, 1]
+            one_hot = torch.ones_like(x, dtype=dtype, device=device) # [B, N, 3]
+            one_hot = node_mask.clone() # [B, N, 1]
             charges = torch.zeros(0).to(device, dtype)
             '''
         for i, data in enumerate(loader):

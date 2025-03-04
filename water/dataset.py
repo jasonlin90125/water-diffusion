@@ -28,7 +28,7 @@ class RadiusGraphDataset(Dataset):
             #self.num_frames, atoms_per_frame, _ = pos_dataset.shape
             _, atoms_per_frame, _ = pos_dataset.shape
             # Hard code num_frames to limit data size
-            self.num_frames = 145
+            self.num_frames = 180
             self.molecules_per_frame = atoms_per_frame // 3
             
         # Precompute mass centers and valid center indices
@@ -153,14 +153,11 @@ def collate_fn(batch):
     # Remove self-edges
     diag_mask = ~torch.eye(N, dtype=torch.bool, device=device).unsqueeze(0)
     edge_mask *= diag_mask
-    
-    # Reshape for compatibility
-    edge_mask = edge_mask.view(B * N * N, 1)
 
     return {
-        'positions': batch_tensor,
-        'atom_mask': atom_mask,
-        'edge_mask': edge_mask,
+        'positions': batch_tensor, # [B, N, 3]
+        'atom_mask': atom_mask, # [B, N]
+        'edge_mask': edge_mask, # [B, N, N]
         #'charges': torch.zeros_like(batch_tensor[..., :1]),
     }
 
@@ -182,6 +179,10 @@ def retrieve_dataloaders(cfg):
     train = Subset(dataset, range(0, train_end))
     val = Subset(dataset, range(train_end, val_end))
     test = Subset(dataset, range(val_end, n))
+
+    print('Training dataset has', len(train), 'samples')
+    print('Validation dataset has', len(val), 'samples')
+    print('Test dataset has', len(test), 'samples')
     
     # Create loaders
     loader_args = {
@@ -193,7 +194,7 @@ def retrieve_dataloaders(cfg):
     
     dataloaders = {
         'train': DataLoader(train, shuffle=True, **loader_args),
-        'val': DataLoader(val, **loader_args),
+        'valid': DataLoader(val, **loader_args),
         'test': DataLoader(test, **loader_args)
     }
     

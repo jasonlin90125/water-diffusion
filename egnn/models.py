@@ -177,10 +177,6 @@ class EGNN_dynamics_water(nn.Module):
     def _forward(self, t, xh, node_mask, edge_mask, context):
         bs, n_nodes, dims = xh.shape
         h_dims = dims - self.n_dims
-        #print(f"bs: {bs}")
-        #print(f"n_nodes: {n_nodes}")
-        #print(f"dims: {dims}")
-        #print(f"h_dims: {h_dims}")
         edges = self.get_adj_matrix(n_nodes, bs, self.device)
         edges = [x.to(self.device) for x in edges]
         node_mask = node_mask.view(bs*n_nodes, 1)
@@ -191,8 +187,6 @@ class EGNN_dynamics_water(nn.Module):
             h = torch.ones(bs*n_nodes, 1).to(self.device)
         else:
             h = xh[:, self.n_dims:].clone()
-
-        #print(f"h.shape: {h.shape}")
 
         if self.condition_time:
             if np.prod(t.size()) == 1:

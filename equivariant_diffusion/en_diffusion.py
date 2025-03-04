@@ -616,6 +616,10 @@ class EnVariationalDiffusion(torch.nn.Module):
         #    print("Found NaNs!!!")
         diffusion_utils.assert_mean_zero_with_mask(z_t[:, :, :self.n_dims], node_mask) # ERROR
 
+        print('Node_mask shape', node_mask.shape)
+        print('z_t shape', z_t.shape)
+        print('Edge_mask shape', edge_mask.shape)
+
         # Neural net prediction.
         net_out = self.phi(z_t, t, node_mask, edge_mask, context)
 
