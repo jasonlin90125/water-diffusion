@@ -487,10 +487,11 @@ class EnVariationalDiffusion(torch.nn.Module):
         x = xh[:, :, :self.n_dims]
 
         h_int = z0[:, :, -1:] if self.include_charges else torch.zeros(0).to(z0.device)
-        x, h_cat, h_int = self.unnormalize(x, z0[:, :, self.n_dims:-1], h_int, node_mask)
+        #x, h_cat, h_int = self.unnormalize(x, z0[:, :, self.n_dims:-1], h_int, node_mask)
 
-        h_cat = F.one_hot(torch.argmax(h_cat, dim=2), self.num_classes) * node_mask
-        h_int = torch.round(h_int).long() * node_mask
+        #h_cat = F.one_hot(torch.argmax(h_cat, dim=2), self.num_classes) * node_mask
+        #h_int = torch.round(h_int).long() * node_mask
+        h_cat = torch.zeros(0).to(z0.device)
         h = {'integer': h_int, 'categorical': h_cat}
         return x, h
 
@@ -594,9 +595,6 @@ class EnVariationalDiffusion(torch.nn.Module):
         alpha_t = self.alpha(gamma_t, x)
         sigma_t = self.sigma(gamma_t, x)
 
-        #print('alpha_t', alpha_t)
-        #print('sigma_t', sigma_t)
-
         # Sample zt ~ Normal(alpha_t x, sigma_t)
         eps = self.sample_combined_position_feature_noise(
             n_samples=x.size(0), n_nodes=x.size(1), node_mask=node_mask)
@@ -612,13 +610,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         # Sample z_t given x, h for timestep t, from q(z_t | x, h)
         z_t = alpha_t * xh + sigma_t * eps
 
-        #if torch.isnan(z_t[:, :, :self.n_dims]).any():
-        #    print("Found NaNs!!!")
-        diffusion_utils.assert_mean_zero_with_mask(z_t[:, :, :self.n_dims], node_mask) # ERROR
-
-        print('Node_mask shape', node_mask.shape)
-        print('z_t shape', z_t.shape)
-        print('Edge_mask shape', edge_mask.shape)
+        diffusion_utils.assert_mean_zero_with_mask(z_t[:, :, :self.n_dims], node_mask)
 
         # Neural net prediction.
         net_out = self.phi(z_t, t, node_mask, edge_mask, context)
