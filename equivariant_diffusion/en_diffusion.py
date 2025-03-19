@@ -597,10 +597,15 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         # Sample zt ~ Normal(alpha_t x, sigma_t)
         eps = self.sample_combined_position_feature_noise(
-            n_samples=x.size(0), n_nodes=x.size(1), node_mask=node_mask)
+            n_samples=x.size(0), n_nodes=x.size(1), node_mask=node_mask.squeeze(-1))
+
+        print(f'x.shape: {x.shape}')
+        print(f'h[integer].shape: {h["integer"].shape}')
+        print(f'h[categorical].shape: {h["categorical"].shape}')
 
         # Concatenate x, h[integer] and h[categorical].
-        xh = torch.cat([x, h['categorical'], h['integer']], dim=2)
+        #xh = torch.cat([x, h['categorical'], h['integer']], dim=2)
+        xh = torch.cat([x, h['categorical'], h['integer']], dim=3)
         if torch.isnan(eps).any():
             print(f'x.size(0): {x.size(0)}, x.size(1): {x.size(1)}')
             print("Found NaNs!!!")
