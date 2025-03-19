@@ -78,6 +78,7 @@ class RadiusGraphDataset(Dataset):
     def __len__(self):
         return self.total_samples
 
+    '''
     def __getitem__(self, idx):
         frame_idx, center_idx = self.valid_centers[idx]
         frame_centers = self.com[frame_idx]
@@ -97,6 +98,39 @@ class RadiusGraphDataset(Dataset):
             'coordinates': torch.from_numpy(shifted_points).float(),
             'num_nodes': len(shifted_points)
         }
+    '''
+
+    def __getitem__(self, idx):
+        frame_idx, center_idx = self.valid_centers[idx]
+        
+        with h5py.File(self.h5_path, 'r') as f:
+            frame_data = f['positions'][frame_idx]  # (num_atoms, 3)
+        
+        reshaped = frame_data.reshape(-1, 3, 3)  # (num_molecules, 3 atoms, 3 coordinates)
+        
+        # Get center molecule's atoms
+        center_molecule = reshaped[center_idx]  # (3, 3)
+        
+        # Find neighboring molecules using COM distances
+        coms = np.mean(reshaped, axis=1)  # (num_molecules, 3)
+        distances = np.linalg.norm(coms - coms[center_idx], axis=1)
+        neighbor_indices = np.where(distances < self.radius)[0]
+        
+        # Collect all atoms from neighbors + center
+        neighbor_molecules = reshaped[neighbor_indices]  # (num_neighbors, 3, 3)
+        all_molecules = np.vstack([neighbor_molecules, center_molecule[np.newaxis]])  # (num_neighbors+1, 3, 3)
+        
+        # Flatten to atomic coordinates and center
+        all_atoms = all_molecules.reshape(-1, 3)  # (3*(num_neighbors+1), 3)
+        mean_xyz = np.mean(all_atoms, axis=0)
+        shifted_atoms = all_atoms - mean_xyz
+
+        shifted_molecules = shifted_atoms.reshape(-1, 3, 3)  # ((num_neighbors+1), 3, 3)
+
+        return {
+            'coordinates': torch.from_numpy(shifted_molecules).float(),
+            'num_nodes': len(shifted_molecules)
+        }
 
     def __del__(self):
         """Clean up memory map resources"""
@@ -114,51 +148,61 @@ class RadiusGraphDataset(Dataset):
         # Get the sample for this index
         sample = self.__getitem__(idx)
         print(f"Coordinates: {sample['coordinates']}")
+        # Save the sample coordinates to PDB
+        save_pdb_from_tensor(sample['coordinates'], 'sample.pdb')
         print(f"Number of nodes: {sample['num_nodes']}")
         print(f"Total samples: {self.total_samples}")
 
+def save_pdb_from_tensor(coords, filename):
+    with open(filename, 'w') as f:
+        atom_index = 1
+        for mol_idx, molecule in enumerate(coords):
+            # O atom
+            x, y, z = molecule[0]
+            f.write(f"ATOM  {atom_index:5d}  O   HOH {mol_idx+1:4d}    {x*10:8.3f}{y*10:8.3f}{z*10:8.3f}  1.00  0.00           O\n")
+            atom_index += 1
+            # H atoms
+            for h_idx in range(1, 3):
+                x, y, z = molecule[h_idx]
+                f.write(f"ATOM  {atom_index:5d}  H   HOH {mol_idx+1:4d}    {x*10:8.3f}{y*10:8.3f}{z*10:8.3f}  1.00  0.00           H\n")
+                atom_index += 1
+
 def collate_fn(batch):
-    # Extract lengths and coordinates separately
-    lengths = [x['num_nodes'] for x in batch]
-    coord_list = [x['coordinates'] for x in batch]
+    lengths = [x['num_nodes'] for x in batch] # [B]
+    coord_list = [x['coordinates'] for x in batch]  # [B, N, 3, 3]
     
-    # Find padding requirements
-    max_nodes = max(lengths)
-    feat_dim = coord_list[0].shape[-1]
-    
-    # Pad coordinates
+    max_atoms = max(lengths)
     padded_batch = []
+    
     for coords in coord_list:
-        padding = max_nodes - coords.shape[0]
+        padding = max_atoms - coords.shape[0]
         padded = torch.cat([
             coords,
-            torch.zeros((padding, feat_dim), dtype=coords.dtype)
+            torch.zeros((padding, 3, 3), dtype=coords.dtype)
         ], dim=0)
         padded_batch.append(padded)
-    
-    batch_tensor = torch.stack(padded_batch, dim=0)
-    
-    # Create perfect mask using original lengths
-    atom_mask = torch.zeros_like(batch_tensor[..., 0])  # [B, N]
-    for i, l in enumerate(lengths):
-        atom_mask[i, :l] = 1.0  # First 'l' nodes are real
+        
+    batch_tensor = torch.stack(padded_batch, dim=0)  # (B, max_molecules, 3, 3)
 
-    # Create edge mask (excluding padding and self-edges)
-    B, N, _ = batch_tensor.shape
+    atom_mask = torch.zeros_like(batch_tensor[..., 0, 0]) # (B, max_molecules)
+    for i, l in enumerate(lengths):
+        atom_mask[i, :l] = 1.0
+        
+    # Edge mask between atoms
+    B, N, _, _ = batch_tensor.shape # (B, max_molecules, 3, 3)
     device = batch_tensor.device
     
-    # Valid connections between real atoms
+    # Create edge_mask from atom_mask
     edge_mask = (atom_mask.unsqueeze(1) * atom_mask.unsqueeze(2))  # [B, N, N]
     
     # Remove self-edges
     diag_mask = ~torch.eye(N, dtype=torch.bool, device=device).unsqueeze(0)
     edge_mask *= diag_mask
-
+    
     return {
-        'positions': batch_tensor, # [B, N, 3]
-        'atom_mask': atom_mask, # [B, N]
-        'edge_mask': edge_mask, # [B, N, N]
-        #'charges': torch.zeros_like(batch_tensor[..., :1]),
+        'positions': batch_tensor,
+        'atom_mask': atom_mask,
+        'edge_mask': edge_mask
     }
 
 def retrieve_dataloaders(cfg):
