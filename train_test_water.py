@@ -137,6 +137,7 @@ def test(args, loader, epoch, eval_model, device, dtype, property_norms, nodes_d
         n_iterations = len(loader)
         for i, batch in enumerate(loader):
             x = batch['positions'].to(device, dtype) # [B, N, 3]
+            batch_size = x.shape[0]
             if torch.isnan(x).any():
                 raise ValueError("NaN detected in input data!")
             node_mask = batch['atom_mask'].to(device, dtype).unsqueeze(-1).unsqueeze(-1) # [B, N, 1, 1]
