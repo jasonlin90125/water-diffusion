@@ -631,8 +631,6 @@ class EnVariationalDiffusion(torch.nn.Module):
         # Compute the error.
         error = self.compute_error(net_out, gamma_t, eps.unsqueeze(2))
 
-        print(f"error.shape: {error.shape}")
-
         if self.training and self.loss_type == 'l2':
             SNR_weight = torch.ones_like(error)
         else:
@@ -667,8 +665,8 @@ class EnVariationalDiffusion(torch.nn.Module):
 
             # Sample z_0 given x, h for timestep t, from q(z_t | x, h)
             eps_0 = self.sample_combined_position_feature_noise(
-                n_samples=x.size(0), n_nodes=x.size(1), node_mask=node_mask)
-            z_0 = alpha_0 * xh + sigma_0 * eps_0
+                n_samples=x.size(0), n_nodes=x.size(1), node_mask=node_mask.squeeze(-1))
+            z_0 = alpha_0 * xh + sigma_0 * eps_0.unsqueeze(2)
 
             net_out = self.phi(z_0, t_zeros, node_mask, edge_mask, context)
 
