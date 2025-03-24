@@ -334,14 +334,13 @@ class EnVariationalDiffusion(torch.nn.Module):
         """Computes signal to noise ratio (alpha^2/sigma^2) given gamma."""
         return torch.exp(-gamma)
 
-    def subspace_dimensionality(self, node_mask):
+    def subspace_dimensionality(self, node_mask): # !!! DOUBLE-CHECK this is correct
         """Compute the dimensionality on translation-invariant linear subspace where distributions on x are defined."""
         number_of_nodes = torch.sum(node_mask.squeeze(2), dim=1)
         return (number_of_nodes - 1) * self.n_dims
 
     def normalize(self, x, h, node_mask):
         x = x / self.norm_values[0]
-        delta_log_px = -self.subspace_dimensionality(node_mask) * np.log(self.norm_values[0])
 
         # Casting to float in case h still has long or int type.
         h_cat = (h['categorical'].float() - self.norm_biases[1]) / self.norm_values[1] * node_mask
@@ -352,6 +351,10 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         # Create new h dictionary.
         h = {'categorical': h_cat, 'integer': h_int}
+
+        node_mask_expanded = node_mask.expand(-1, -1, 3, -1)  # [B, N, 3, 1] 
+        node_mask_flat = node_mask_expanded.reshape(node_mask.size(0), -1, 1)  # [B, N*3, 1]
+        delta_log_px = -self.subspace_dimensionality(node_mask_flat) * np.log(self.norm_values[0])
 
         return x, h, delta_log_px
 
@@ -408,6 +411,12 @@ class EnVariationalDiffusion(torch.nn.Module):
         This is essentially a lot of work for something that is in practice negligible in the loss. However, you
         compute it so that you see it when you've made a mistake in your noise schedule.
         """
+        xh = xh.reshape(xh.size(0), -1, xh.size(-1))
+
+        # Flatten node_mask from [B, N, 1, 1] to [B, N*3, 1]
+        node_mask = node_mask.expand(-1, -1, 3, -1)  # [B, N, 3, 1] 
+        node_mask = node_mask.reshape(node_mask.size(0), -1, 1)  # [B, N*3, 1]
+
         # Compute the last alpha value, alpha_T.
         ones = torch.ones((xh.size(0), 1), device=xh.device)
         gamma_T = self.gamma(ones)
@@ -460,7 +469,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         """Computes p(x|z0)."""
         batch_size = x.size(0)
 
-        n_nodes = node_mask.squeeze(2).sum(1)  # N has shape [B]
+        n_nodes = node_mask.squeeze(-1).squeeze(2).sum(1)  # N has shape [B]
         assert n_nodes.size() == (batch_size,)
         degrees_of_freedom_x = (n_nodes - 1) * self.n_dims
 
@@ -504,12 +513,15 @@ class EnVariationalDiffusion(torch.nn.Module):
     def log_pxh_given_z0_without_constants(
             self, x, h, z_t, gamma_0, eps, net_out, node_mask, epsilon=1e-10):
         # Discrete properties are predicted directly from z_t.
-        z_h_cat = z_t[:, :, self.n_dims:-1] if self.include_charges else z_t[:, :, self.n_dims:]
-        z_h_int = z_t[:, :, -1:] if self.include_charges else torch.zeros(0).to(z_t.device)
+        # z_h_cat = z_t[:, :, self.n_dims:-1] if self.include_charges else z_t[:, :, self.n_dims:]
+        # z_h_int = z_t[:, :, -1:] if self.include_charges else torch.zeros(0).to(z_t.device)
+        z_h_cat = z_t[:, :, :, self.n_dims:-1] if self.include_charges else z_t[:, :, :, self.n_dims:]
+        z_h_int = z_t[:, :, :, -1:] if self.include_charges else torch.zeros(0).to(z_t.device)
 
         # Take only part over x.
         eps_x = eps[:, :, :self.n_dims]
-        net_x = net_out[:, :, :self.n_dims]
+        #net_x = net_out[:, :, :self.n_dims]
+        net_x = net_out[:, :, :, :self.n_dims]
 
         # Compute sigma_0 and rescale to the integer scale of the data.
         sigma_0 = self.sigma(gamma_0, target_tensor=z_t)
@@ -518,7 +530,7 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         # Computes the error for the distribution N(x | 1 / alpha_0 z_0 + sigma_0/alpha_0 eps_0, sigma_0 / alpha_0),
         # the weighting in the epsilon parametrization is exactly '1'.
-        log_p_x_given_z_without_constants = -0.5 * self.compute_error(net_x, gamma_0, eps_x)
+        log_p_x_given_z_without_constants = -0.5 * self.compute_error(net_x, gamma_0, eps_x.unsqueeze(2))
 
         # Compute delta indicator masks.
         h_integer = torch.round(h['integer'] * self.norm_values[2] + self.norm_biases[2]).long()
@@ -599,10 +611,6 @@ class EnVariationalDiffusion(torch.nn.Module):
         eps = self.sample_combined_position_feature_noise(
             n_samples=x.size(0), n_nodes=x.size(1), node_mask=node_mask.squeeze(-1))
 
-        print(f'x.shape: {x.shape}')
-        print(f'h[integer].shape: {h["integer"].shape}')
-        print(f'h[categorical].shape: {h["categorical"].shape}')
-
         # Concatenate x, h[integer] and h[categorical].
         #xh = torch.cat([x, h['categorical'], h['integer']], dim=2)
         xh = torch.cat([x, h['categorical'], h['integer']], dim=3)
@@ -613,15 +621,15 @@ class EnVariationalDiffusion(torch.nn.Module):
             print(f'xh at NaNs indices: {xh[torch.isnan(eps).nonzero(as_tuple=True)]}')
             print(f"xh: {xh}")
         # Sample z_t given x, h for timestep t, from q(z_t | x, h)
-        z_t = alpha_t * xh + sigma_t * eps
+        z_t = alpha_t * xh + sigma_t * eps.unsqueeze(2)
 
-        diffusion_utils.assert_mean_zero_with_mask(z_t[:, :, :self.n_dims], node_mask)
+        diffusion_utils.assert_mean_zero_with_mask(z_t[:, :, :, :self.n_dims], node_mask)
 
         # Neural net prediction.
         net_out = self.phi(z_t, t, node_mask, edge_mask, context)
 
         # Compute the error.
-        error = self.compute_error(net_out, gamma_t, eps)
+        error = self.compute_error(net_out, gamma_t, eps.unsqueeze(2))
 
         if self.training and self.loss_type == 'l2':
             SNR_weight = torch.ones_like(error)
@@ -738,7 +746,9 @@ class EnVariationalDiffusion(torch.nn.Module):
         eps_t = self.phi(zt, t, node_mask, edge_mask, context)
 
         # Compute mu for p(zs | zt).
-        diffusion_utils.assert_mean_zero_with_mask(zt[:, :, :self.n_dims], node_mask)
+        #diffusion_utils.assert_mean_zero_with_mask(zt[:, :, :self.n_dims], node_mask)
+        #diffusion_utils.assert_mean_zero_with_mask(eps_t[:, :, :self.n_dims], node_mask)
+        diffusion_utils.assert_mean_zero_with_mask(zt[:, :, :, :self.n_dims], node_mask)
         diffusion_utils.assert_mean_zero_with_mask(eps_t[:, :, :self.n_dims], node_mask)
         mu = zt / alpha_t_given_s - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_t
 

@@ -175,19 +175,37 @@ class EGNN_dynamics_water(nn.Module):
         return self._forward
 
     def _forward(self, t, xh, node_mask, edge_mask, context):
-        bs, n_nodes, dims = xh.shape
+        bs, n_nodes, _, dims = xh.shape # changed from bs, n_nodes, dims to bs, n_nodes, _, dims
         h_dims = dims - self.n_dims
-        edges = self.get_adj_matrix(n_nodes, bs, self.device)
+
+        # Reshape to (B, N*3, D) where 3 is number of atom per molecule
+        xh = xh.view(bs, n_nodes * 3, -1)
+
+        # Reshape to (B*N*3, D) for processing
+        node_mask = node_mask.squeeze(-1).squeeze(-1)  # Remove last two singleton dimensions → (B, M)
+        node_mask = node_mask.unsqueeze(-1).expand(-1, -1, 3)  # Add atom dimension → (B, M, 3)
+        node_mask = node_mask.reshape(-1, 1)  # Flatten to (B*M*3, 1)
+
+        # Reshape to (B*N*3*N*3, 1) for processing
+        edge_mask = edge_mask.repeat_interleave(3, dim=1)
+        edge_mask = edge_mask.repeat_interleave(3, dim=2)
+        edge_mask = edge_mask.view(-1, 1)
+
+        #edges = self.get_adj_matrix(n_nodes, bs, self.device)
+        edges = self.get_adj_matrix(n_nodes * 3, bs, self.device)
         edges = [x.to(self.device) for x in edges]
-        node_mask = node_mask.view(bs*n_nodes, 1)
-        edge_mask = edge_mask.view(bs*n_nodes*n_nodes, 1)
-        xh = xh.view(bs*n_nodes, -1).clone() * node_mask
-        x = xh[:, 0:self.n_dims].clone()
+        #node_mask = node_mask.view(bs*n_nodes, 1)
+        #edge_mask = edge_mask.view(bs*n_nodes*n_nodes, 1)
+        #xh = xh.view(bs*n_nodes, -1).clone() * node_mask
+        xh = xh.view(bs*n_nodes*3, -1).clone() * node_mask
+        x = xh[:, :self.n_dims].clone()
         if h_dims == 0:
-            h = torch.ones(bs*n_nodes, 1).to(self.device)
+            #h = torch.ones(bs*n_nodes, 1).to(self.device)
+            h = torch.ones(bs*n_nodes*3, 1).to(self.device)
         else:
             h = xh[:, self.n_dims:].clone()
 
+        '''
         if self.condition_time:
             if np.prod(t.size()) == 1:
                 # t is the same for all elements in batch.
@@ -202,9 +220,7 @@ class EGNN_dynamics_water(nn.Module):
             # We're conditioning, awesome!
             context = context.view(bs*n_nodes, self.context_node_nf)
             h = torch.cat([h, context], dim=1)
-
-        #print("h.shape: ", h.shape)
-        #print("x.shape: ", x.shape)
+        '''
 
         if self.mode == 'egnn_dynamics':
             h_final, x_final = self.egnn(h, x, edges, node_mask=node_mask, edge_mask=edge_mask)
@@ -226,7 +242,8 @@ class EGNN_dynamics_water(nn.Module):
             # Slice off last dimension which represented time.
             h_final = h_final[:, :-1]
 
-        vel = vel.view(bs, n_nodes, -1)
+        #vel = vel.view(bs, n_nodes, -1)
+        vel = vel.view(bs, n_nodes, 3, -1)
 
         if torch.any(torch.isnan(vel)):
             print('Warning: detected nan, resetting EGNN output to zero.')
@@ -235,13 +252,16 @@ class EGNN_dynamics_water(nn.Module):
         if node_mask is None:
             vel = remove_mean(vel)
         else:
-            vel = remove_mean_with_mask(vel, node_mask.view(bs, n_nodes, 1))
+            #vel = remove_mean_with_mask(vel, node_mask.view(bs, n_nodes, 1))
+            vel = remove_mean_with_mask(vel, node_mask.view(bs, n_nodes, 3, 1))
 
         if h_dims == 0:
             return vel
         else:
-            h_final = h_final.view(bs, n_nodes, -1)
-            return torch.cat([vel, h_final], dim=2)
+            #h_final = h_final.view(bs, n_nodes, -1)
+            h_final = h_final.view(bs, n_nodes, 3, -1)
+            #return torch.cat([vel, h_final], dim=2)
+            return torch.cat([vel, h_final], dim=3)
 
     def get_adj_matrix(self, n_nodes, batch_size, device):
         if n_nodes in self._edges_dict:

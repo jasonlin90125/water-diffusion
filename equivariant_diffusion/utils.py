@@ -46,7 +46,9 @@ def assert_mean_zero(x):
 def assert_mean_zero_with_mask(x, node_mask, eps=1e-10):
     assert_correctly_masked(x, node_mask)
     largest_value = x.abs().max().item()
-    error = torch.sum(x, dim=1, keepdim=True).abs().max().item()
+    #error = torch.sum(x, dim=1, keepdim=True).abs().max().item()   
+    # Modified line: Sum across ATOMS (dim=1,2) instead of MOLECULES (dim=1)
+    error = torch.sum(x, dim=(1,2), keepdim=True).abs().max().item()  # Changed dim=1 → dim=2
     rel_error = error / (largest_value + eps)
     assert rel_error < 1e-2, f'Mean is not zero, relative_error {rel_error}'
 
