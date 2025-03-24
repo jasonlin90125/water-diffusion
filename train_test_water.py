@@ -137,13 +137,15 @@ def test(args, loader, epoch, eval_model, device, dtype, property_norms, nodes_d
         n_iterations = len(loader)
         for i, batch in enumerate(loader):
             x = batch['positions'].to(device, dtype) # [B, N, 3]
-            batch_size = x.shape[0]
             if torch.isnan(x).any():
                 raise ValueError("NaN detected in input data!")
-            node_mask = batch['atom_mask'].to(device, dtype).unsqueeze(2) # [B, N, 1]
-            edge_mask = batch['edge_mask'].to(device, dtype) # [B*N*N, 1]
-            one_hot = torch.ones_like(x, dtype=dtype, device=device) # [B, N, 3]
-            one_hot = node_mask.clone() # [B, N, 1]
+            node_mask = batch['atom_mask'].to(device, dtype).unsqueeze(-1).unsqueeze(-1) # [B, N, 1, 1]
+            edge_mask = batch['edge_mask'].to(device, dtype) # [B, N, N]
+            one_hot = torch.zeros(x.shape[0], x.shape[1], 3, 1).to(device, dtype)
+            one_hot[:, :, 0] = 1 # oxygen
+            one_hot[:, :, 1] = 2 # hydrogen
+            one_hot[:, :, 2] = 2 # hydrogen
+            #one_hot = node_mask.clone() # [B, N, 1, 1]
             charges = torch.zeros(0).to(device, dtype)
             '''
         for i, data in enumerate(loader):
