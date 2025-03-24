@@ -631,11 +631,14 @@ class EnVariationalDiffusion(torch.nn.Module):
         # Compute the error.
         error = self.compute_error(net_out, gamma_t, eps.unsqueeze(2))
 
+        print(f"error.shape: {error.shape}")
+
         if self.training and self.loss_type == 'l2':
             SNR_weight = torch.ones_like(error)
         else:
             # Compute weighting with SNR: (SNR(s-t) - 1) for epsilon parametrization.
-            SNR_weight = (self.SNR(gamma_s - gamma_t) - 1).squeeze(1).squeeze(1)
+            SNR_weight = (self.SNR(gamma_s - gamma_t) - 1).squeeze(1).squeeze(1).squeeze(1)
+
         assert error.size() == SNR_weight.size()
         loss_t_larger_than_zero = 0.5 * SNR_weight * error
 
