@@ -3,7 +3,7 @@ source ~/miniconda3/etc/profile.d/conda.sh
 conda activate water-diffusion
 
 # Set CUDA device to use only one or two GPUs
-export CUDA_VISIBLE_DEVICES=0,1
+export CUDA_VISIBLE_DEVICES=0,1,2,3
 
 # Remove the existing log file if it exists
 rm -f water_diffusion.log
