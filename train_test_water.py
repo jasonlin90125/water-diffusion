@@ -20,7 +20,6 @@ def train_epoch(args, loader, epoch, model, model_dp, model_ema, ema, device, dt
     nll_epoch = []
     n_iterations = len(loader)
     for i, batch in enumerate(loader):
-        print(f"Batch {i}")
         x = batch['positions'].to(device, dtype) # [B, N, 3]
         if torch.isnan(x).any():
             raise ValueError("NaN detected in input data!")

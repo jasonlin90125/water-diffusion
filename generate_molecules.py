@@ -126,6 +126,8 @@ def save_oxygen_pdb(xyz_coordinates, output_path):
 def main():
     # Parse arguments
     args = get_args()
+
+    print(args.exp_name)
     
     # Set device
     device = torch.device(args.device)
