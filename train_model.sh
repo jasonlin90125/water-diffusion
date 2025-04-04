@@ -36,5 +36,4 @@ python main_water.py \
     --lr 1e-4 \
     --normalize_factors [1,4,10] \
     --test_epochs 20 \
-    --ema_decay 0.9999 \
-    --no_wandb
+    --ema_decay 0.9999 
