@@ -27,6 +27,7 @@ class GCL(nn.Module):
                 nn.Linear(hidden_nf, 1),
                 nn.Sigmoid())
 
+    '''
     def edge_model(self, source, target, edge_attr, edge_mask):
         if edge_attr is None:  # Unused.
             out = torch.cat([source, target], dim=1)
@@ -43,6 +44,27 @@ class GCL(nn.Module):
         if edge_mask is not None:
             out = out * edge_mask
         return out, mij
+    '''
+    def edge_model(self, source, target, edge_attr, edge_mask_dense): # Accept dense mask
+        if edge_attr is None:  # Unused.
+            out = torch.cat([source, target], dim=1)
+        else:
+            out = torch.cat([source, target, edge_attr], dim=1)
+        mij = self.edge_mlp(out)
+
+        if self.attention:
+            att_val = self.att_mlp(mij)
+            out = mij * att_val
+        else:
+            out = mij
+
+        if edge_mask_dense is not None:
+            # We need edge_index (row, col) here to select mask values
+            # This requires passing edge_index to edge_model, or selecting the mask outside
+            # Let's modify the forward pass to select the mask values first
+            pass # Masking will be done in forward
+        # --- End mask application ---
+        return out, mij
 
     def node_model(self, x, edge_index, edge_attr, node_attr):
         row, col = edge_index
@@ -56,9 +78,30 @@ class GCL(nn.Module):
         out = x + self.node_mlp(agg)
         return out, agg
 
+    '''
     def forward(self, h, edge_index, edge_attr=None, node_attr=None, node_mask=None, edge_mask=None):
         row, col = edge_index
         edge_feat, mij = self.edge_model(h[row], h[col], edge_attr, edge_mask)
+        h, agg = self.node_model(h, edge_index, edge_feat, node_attr)
+        if node_mask is not None:
+            h = h * node_mask
+        return h, mij
+    '''
+    def forward(self, h, edge_index, edge_attr=None, node_attr=None, node_mask=None, edge_mask=None): # edge_mask is dense
+        row, col = edge_index
+        edge_feat, mij = self.edge_model(h[row], h[col], edge_attr, None) # Pass None for mask here
+
+        # --- Apply edge mask correctly after computing edge_feat ---
+        if edge_mask is not None:
+            M = h.size(0) // edge_mask.size(0) # max_n_atoms
+            b = row // M
+            i = row % M
+            j = col % M
+             # Select the mask value for each edge: shape [num_edges, 1]
+            mask_values = edge_mask[b, i, j].unsqueeze(-1)
+            edge_feat = edge_feat * mask_values
+        # --- End mask application ---
+
         h, agg = self.node_model(h, edge_index, edge_feat, node_attr)
         if node_mask is not None:
             h = h * node_mask
@@ -83,6 +126,7 @@ class EquivariantUpdate(nn.Module):
         self.normalization_factor = normalization_factor
         self.aggregation_method = aggregation_method
 
+    '''
     def coord_model(self, h, coord, edge_index, coord_diff, edge_attr, edge_mask):
         row, col = edge_index
         input_tensor = torch.cat([h[row], h[col], edge_attr], dim=1)
@@ -97,8 +141,42 @@ class EquivariantUpdate(nn.Module):
                                    aggregation_method=self.aggregation_method)
         coord = coord + agg
         return coord
+    '''
+    def coord_model(self, h, coord, edge_index, coord_diff, edge_attr, edge_mask_dense): # Accept dense mask
+        row, col = edge_index # row, col are flattened indices [0, B*M-1]
+        input_tensor = torch.cat([h[row], h[col], edge_attr], dim=1)
+        if self.tanh:
+            trans = coord_diff * torch.tanh(self.coord_mlp(input_tensor)) * self.coords_range
+        else:
+            trans = coord_diff * self.coord_mlp(input_tensor)
 
+        # --- Apply edge mask correctly ---
+        if edge_mask_dense is not None:
+            # Map row/col back to batch and node indices
+            M = coord.size(0) // edge_mask_dense.size(0) # max_n_atoms
+            b = row // M
+            i = row % M
+            j = col % M
+            # Select the mask value for each edge: shape [num_edges, 1]
+            mask_values = edge_mask_dense[b, i, j].unsqueeze(-1)
+            trans = trans * mask_values
+        # --- End mask application ---
+
+        agg = unsorted_segment_sum(trans, row, num_segments=coord.size(0),
+                                   normalization_factor=self.normalization_factor,
+                                   aggregation_method=self.aggregation_method)
+        coord = coord + agg
+        return coord
+
+    '''
     def forward(self, h, coord, edge_index, coord_diff, edge_attr=None, node_mask=None, edge_mask=None):
+        coord = self.coord_model(h, coord, edge_index, coord_diff, edge_attr, edge_mask)
+        if node_mask is not None:
+            coord = coord * node_mask
+        return coord
+    '''
+    def forward(self, h, coord, edge_index, coord_diff, edge_attr=None, node_mask=None, edge_mask=None): # edge_mask is dense
+        # Pass the dense mask to coord_model
         coord = self.coord_model(h, coord, edge_index, coord_diff, edge_attr, edge_mask)
         if node_mask is not None:
             coord = coord * node_mask
@@ -131,6 +209,7 @@ class EquivariantBlock(nn.Module):
                                                        aggregation_method=self.aggregation_method))
         self.to(self.device)
 
+    '''
     def forward(self, h, x, edge_index, node_mask=None, edge_mask=None, edge_attr=None):
         # Edit Emiel: Remove velocity as input
         distances, coord_diff = coord2diff(x, edge_index, self.norm_constant)
@@ -142,6 +221,26 @@ class EquivariantBlock(nn.Module):
         x = self._modules["gcl_equiv"](h, x, edge_index, coord_diff, edge_attr, node_mask, edge_mask)
 
         # Important, the bias of the last linear might be non-zero
+        if node_mask is not None:
+            h = h * node_mask
+        return h, x
+    '''
+    def forward(self, h, x, edge_index, node_mask=None, edge_mask=None, edge_attr=None): # edge_mask is now dense [B,M,M]
+        # Edit Emiel: Remove velocity as input
+        distances, coord_diff = coord2diff(x, edge_index, self.norm_constant)
+        if self.sin_embedding is not None:
+            distances = self.sin_embedding(distances)
+        edge_attr_combined = torch.cat([distances, edge_attr], dim=1) # Combine distances with other attrs if any
+
+        for i in range(0, self.n_layers):
+            # Pass the dense edge_mask to GCL
+            h, _ = self._modules["gcl_%d" % i](h, edge_index, edge_attr=edge_attr_combined, node_mask=node_mask, edge_mask=edge_mask)
+
+        # Pass the dense edge_mask to EquivariantUpdate's coord_model if needed (it wasn't originally used there for masking `trans`)
+        # If masking is desired in coord_model, it needs modification too. For now, assume it's okay.
+        # Let's check EquivariantUpdate - it *did* use edge_mask. We need to adapt it.
+        x = self._modules["gcl_equiv"](h, x, edge_index, coord_diff, edge_attr=edge_attr_combined, node_mask=node_mask, edge_mask=edge_mask) # Pass dense mask
+
         if node_mask is not None:
             h = h * node_mask
         return h, x
@@ -181,6 +280,7 @@ class EGNN(nn.Module):
                                                                aggregation_method=self.aggregation_method))
         self.to(self.device)
 
+    '''
     def forward(self, h, x, edge_index, node_mask=None, edge_mask=None):
         # Edit Emiel: Remove velocity as input
         distances, _ = coord2diff(x, edge_index)
@@ -191,6 +291,21 @@ class EGNN(nn.Module):
             h, x = self._modules["e_block_%d" % i](h, x, edge_index, node_mask=node_mask, edge_mask=edge_mask, edge_attr=distances)
 
         # Important, the bias of the last linear might be non-zero
+        h = self.embedding_out(h)
+        if node_mask is not None:
+            h = h * node_mask
+        return h, x
+    '''
+    def forward(self, h, x, edge_index, node_mask=None, edge_mask=None): # edge_mask is dense [B,M,M]
+        # Edit Emiel: Remove velocity as input
+        distances, _ = coord2diff(x, edge_index)
+        if self.sin_embedding is not None:
+            distances = self.sin_embedding(distances)
+        h = self.embedding(h)
+        for i in range(0, self.n_layers):
+            # Pass the dense edge_mask to the EquivariantBlock
+            h, x = self._modules["e_block_%d" % i](h, x, edge_index, node_mask=node_mask, edge_mask=edge_mask, edge_attr=distances)
+
         h = self.embedding_out(h)
         if node_mask is not None:
             h = h * node_mask

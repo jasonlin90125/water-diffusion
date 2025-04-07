@@ -82,6 +82,7 @@ def get_args():
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for generation')
     parser.add_argument('--temperature', type=float, default=0.9, help='Sampling temperature')
     parser.add_argument('--fix_atoms', type=int, default=None, help='Fix number of atoms per molecule')
+    parser.add_argument('--molecules_per_cluster', type=int, default=10, help='Number of molecules per cluster')
     
     # Output parameters
     parser.add_argument('--output_dir', type=str, default='generated_molecules', help='Directory to save generated molecules')
@@ -123,6 +124,32 @@ def save_oxygen_pdb(xyz_coordinates, output_path):
             f.write(f"ATOM  {atom_index:5d}  O   HOH A   1    {x*10:8.3f}{y*10:8.3f}{z*10:8.3f}  1.00  0.00           O\n")
             atom_index += 1
 
+def save_water_molecule_pdb(positions, atom_decoder, output_dir, molecule_mask=None):
+    batch_size = positions.size(0)
+    for i in range(batch_size):
+        pos = positions[i]
+        if molecule_mask is not None:
+            pos = pos[molecule_mask[i].bool()]
+        
+        filename = os.path.join(output_dir, f'cluster_{i}.pdb')
+        with open(filename, 'w') as f:
+            f.write("REMARK   Generated water cluster\n")
+            atom_idx = 1
+            mol_idx = 1
+            for j in range(0, len(pos), 3):  # Process 3 atoms at a time (1 water molecule)
+                # Write oxygen atom
+                x, y, z = pos[j] * 10  # Convert to Angstroms
+                f.write(f"ATOM  {atom_idx:5d}  O   HOH {mol_idx:>4d}    {x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00           O\n")
+                atom_idx += 1
+                
+                # Write hydrogen atoms
+                for k in range(1, 3):
+                    x, y, z = pos[j + k] * 10
+                    f.write(f"ATOM  {atom_idx:5d}  H   HOH {mol_idx:>4d}    {x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00           H\n")
+                    atom_idx += 1
+                mol_idx += 1
+            f.write("END\n")
+
 def main():
     # Parse arguments
     args = get_args()
@@ -151,38 +178,61 @@ def main():
     
     # Load model
     model, nodes_dist, prop_dist = load_model_from_checkpoint(args, device, dataset_info)
+
+    n_molecules = args.molecules_per_cluster
+    n_atoms_total = n_molecules * dataset_info['atoms_per_molecule']
+    num_atom_types = dataset_info['num_atom_types']
+    atoms_per_mol = dataset_info['atoms_per_molecule'] # Should be 3
+
+    molecule_mask = torch.ones(args.batch_size, n_molecules, device=device)
+    atom_mask = molecule_mask.unsqueeze(-1).repeat(1, 1, atoms_per_mol).view(args.batch_size, n_atoms_total).to(device)
+    atom_mask_unsqueeze = atom_mask.unsqueeze(-1)
+    atom_edge_mask = atom_mask_unsqueeze * atom_mask_unsqueeze.transpose(1, 2)
+    diag_mask = ~torch.eye(n_atoms_total, dtype=torch.bool, device=device).unsqueeze(0)
+    atom_edge_mask = atom_edge_mask * diag_mask
+    atom_edge_mask = atom_edge_mask.to(device)
+
+    fixed_atom_types_flat = torch.tensor([0, 1, 1] * n_molecules, device=device).long() # [N*3]
+    one_hot_template = F.one_hot(fixed_atom_types_flat, num_classes=num_atom_types).float() # [N*3, num_types]
+    one_hot = one_hot_template.unsqueeze(0).repeat(args.batch_size, 1, 1) # [B, N*3, num_types]
+    one_hot = one_hot * atom_mask.unsqueeze(-1) # Apply mask
     
-    # Generate molecules
-    print(f"Generating {args.n_samples} molecules...")
-    # Create output directory if it doesn't exist
+    print(f"Generating {args.n_samples} clusters with {n_molecules} molecules each...")
     os.makedirs(args.output_dir, exist_ok=True)
 
-    # Generate molecules in batches
-    all_molecules = []
-    num_batches = (args.n_samples + args.batch_size - 1) // args.batch_size
+    generated_count = 0
+    with torch.no_grad():
+        for i in tqdm(range(0, args.n_samples, args.batch_size)):
+            current_batch_size = min(args.batch_size, args.n_samples - generated_count)
+            if current_batch_size == 0: break
 
-    for i in tqdm(range(num_batches)):
-        # Determine batch size for the last batch
-        current_batch_size = min(args.batch_size, args.n_samples - i * args.batch_size)
-        
-        # Determine number of atoms per molecule
-        if args.fix_atoms is not None:
-            nodesxsample = torch.ones(current_batch_size, dtype=torch.int64) * args.fix_atoms
-        else:
-            #nodesxsample = nodes_dist.sample(current_batch_size)
-            nodesxsample = torch.randint(15, 21, (current_batch_size,), dtype=torch.int64)
-        
-        # Sample molecules
-        one_hot, charges, positions, node_mask = sample(
-            args, device, model, dataset_info, 
-            prop_dist=prop_dist,
-            nodesxsample=nodesxsample)
+            # Adjust masks and features for the current batch size
+            mol_mask_batch = molecule_mask[:current_batch_size]
+            atom_mask_batch = atom_mask[:current_batch_size]
+            atom_edge_mask_batch = atom_edge_mask[:current_batch_size]
+            one_hot_batch = one_hot[:current_batch_size] # Select batch slice for one_hot
+            context_batch = None # No context
 
-        # Save positions to XYZ file
-        for j in range(current_batch_size):
-            xyz_coordinates = positions[j][node_mask[j].squeeze().bool()].tolist()
-            pdb_file = os.path.join(args.output_dir, f'molecule_{i * args.batch_size + j}.pdb')
-            save_oxygen_pdb(xyz_coordinates, pdb_file)
+            # Sample positions [B, N, 3, 3]
+            positions, h_final = model.sample(
+                n_samples=current_batch_size,
+                n_nodes_mol=n_molecules,
+                molecule_mask=mol_mask_batch,
+                atom_mask=atom_mask_batch,
+                atom_edge_mask=atom_edge_mask_batch,
+                one_hot=one_hot_batch,
+                context=context_batch
+            )
+
+            # Save the generated structures
+            save_water_molecule_pdb(
+                positions.cpu(),
+                dataset_info['atom_decoder'],
+                args.output_dir,
+                molecule_mask=mol_mask_batch.cpu(),
+             )
+            print(f"Saved batch {i//args.batch_size + 1}. PDB files starting index {generated_count}.") # Corrected print statement
+            generated_count += current_batch_size
 
 if __name__ == "__main__":
     main()

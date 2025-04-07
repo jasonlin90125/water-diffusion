@@ -1,263 +1,128 @@
 import wandb
-from equivariant_diffusion.utils import assert_mean_zero_with_mask, remove_mean_with_mask,\
-    assert_correctly_masked, sample_center_gravity_zero_gaussian_with_mask
+# Make sure utils points to the diffusion utils, not water utils
+from equivariant_diffusion import utils as diffusion_utils
 import numpy as np
-#import qm9.visualizer as vis
-#from qm9.analyze import analyze_stability_for_molecules
-#from qm9.sampling import sample_chain, sample, sample_sweep_conditional
-import utils
-from water import losses
-#import qm9.utils as qm9utils
-#from qm9 import losses
+import utils # General utils like Queue
+from water import losses # Water specific losses (should be general now)
 import time
 import torch
+from tqdm import tqdm
+from torch.nn.parallel import DistributedDataParallel as DDP
 
-
-def train_epoch(args, loader, epoch, model, model_dp, model_ema, ema, device, dtype, property_norms, optim,
-                nodes_dist, gradnorm_queue, dataset_info, prop_dist):
-    model_dp.train()
+def train_epoch(args, loader, epoch, model, # model is potentially DDP wrapped
+                model_ema, ema, device, dtype, property_norms, optim,
+                nodes_dist, gradnorm_queue, dataset_info, prop_dist, rank, wandb): # Added rank, wandb
+    # Use model directly (works for both single and DDP)
     model.train()
+    if args.ema_decay > 0: model_ema.train() # Set EMA model mode if used
+
     nll_epoch = []
     n_iterations = len(loader)
-    for i, batch in enumerate(loader):
-        x = batch['positions'].to(device, dtype) # [B, N, 3]
-        if torch.isnan(x).any():
-            raise ValueError("NaN detected in input data!")
-        node_mask = batch['atom_mask'].to(device, dtype).unsqueeze(2) # [B, N, 1]
-        edge_mask = batch['edge_mask'].to(device, dtype) # [B*N*N, 1]
-        one_hot = torch.ones_like(x, dtype=dtype, device=device) # [B, N, 3]
-        one_hot = node_mask.clone() # [B, N, 1]
-        charges = torch.zeros(0).to(device, dtype)
-        '''
-    for i, data in enumerate(loader):
-        x = data['positions'].to(device, dtype)
-        node_mask = data['atom_mask'].to(device, dtype).unsqueeze(2)
-        edge_mask = data['edge_mask'].to(device, dtype)
-        one_hot = data['one_hot'].to(device, dtype)
-        charges = (data['charges'] if args.include_charges else torch.zeros(0)).to(device, dtype)
-        '''
 
-        #x = remove_mean_with_mask(x, node_mask)
+    # Wrap loader in tqdm only on rank 0 for clean progress bar
+    if rank == 0:
+        pbar = tqdm(enumerate(loader), total=n_iterations)
+    else:
+        pbar = enumerate(loader)
 
-        '''
-        if args.augment_noise > 0:
-            # Add noise eps ~ N(0, augment_noise) around points.
-            eps = sample_center_gravity_zero_gaussian_with_mask(x.size(), x.device, node_mask)
-            x = x + eps * args.augment_noise
-        '''
+    for i, batch in pbar: # Use pbar iterator
+        # Unpack batch according to the new collate_fn structure
+        x = batch['positions'].to(device, dtype)         # [B, N, 3, 3]
+        molecule_mask = batch['molecule_mask'].to(device, dtype) # [B, N]
+        atom_mask = batch['atom_mask'].to(device, dtype)     # [B, N*3]
+        one_hot = batch['one_hot'].to(device, dtype)         # [B, N*3, num_types]
+        atom_edge_mask = batch['edge_mask'].to(device, dtype)  # [B, N*3, N*3]
 
-        #x = remove_mean_with_mask(x, node_mask)
-        '''
-        if args.data_augmentation:
-            x = utils.random_rotation(x).detach()
-        '''
+        # Center positions (using molecule mask might be tricky, use atom mask for overall COM=0)
+        x_flat = x.view(x.shape[0], -1, 3) # Flatten to [B, N*3, 3] for centering
+        atom_mask_unsqueeze = atom_mask.unsqueeze(-1) # [B, N*3, 1]
+        x_centered_flat = diffusion_utils.remove_mean_with_mask(x_flat, atom_mask_unsqueeze)
+        x = x_centered_flat.view(x.shape) # Reshape back to [B, N, 3, 3]
 
-        #check_mask_correct([x, one_hot, charges], node_mask)
-        #assert_mean_zero_with_mask(x, node_mask)
+        # Features 'h' are derived from one_hot
+        h = {'categorical': one_hot, 'integer': torch.zeros(0).to(device)} # No integer features
 
-        h = {'categorical': one_hot, 'integer': charges}
-
-        '''
-        if len(args.conditioning) > 0:
-            context = qm9utils.prepare_context(args.conditioning, batch, property_norms).to(device, dtype)
-            assert_correctly_masked(context, node_mask)
-        else:
-            context = None
-        '''
-        context = None
+        context = None # No context implemented here
 
         optim.zero_grad()
 
-        # transform batch through flow
-        nll, reg_term, mean_abs_z = losses.compute_loss_and_nll(args, model_dp, nodes_dist,
-                                                                x, h, node_mask, edge_mask, context)
-        # standard nll from forward KL
-        loss = nll + args.ode_regularization * reg_term
+        # === Call Diffusion Model Forward ===
+        # Pass atom_mask as node_mask, atom_edge_mask as edge_mask
+        nll = model(x, h, node_mask=atom_mask, edge_mask=atom_edge_mask, context=context)
+        # nll is already averaged over batch inside the model's forward
+
+        # Backpropagation
+        loss = nll # The model's forward returns the final loss scalar
         loss.backward()
 
+        # Gradient Clipping
         if args.clip_grad:
             grad_norm = utils.gradient_clipping(model, gradnorm_queue)
         else:
             grad_norm = 0.
-
         optim.step()
 
-        # Update EMA if enabled.
+        # Update EMA
         if args.ema_decay > 0:
-            ema.update_model_average(model_ema, model)
+            ema.update_model_average(model_ema, model.module if isinstance(model, DDP) else model)
 
-        if i % args.n_report_steps == 0:
-            print(f"\rEpoch: {epoch}, iter: {i}/{n_iterations}, "
-                  f"Loss {loss.item():.2f}, NLL: {nll.item():.2f}, "
-                  f"RegTerm: {reg_term.item():.1f}, "
-                  f"GradNorm: {grad_norm:.1f}")
-        nll_epoch.append(nll.item())
+        if rank == 0: # Log only from rank 0
+            log_msg = f"Epoch: {epoch}, iter: {i}/{n_iterations}, Loss {loss.item():.4f}, GradNorm: {grad_norm:.1f}"
+            # Update tqdm description if used
+            if isinstance(pbar, tqdm):
+                pbar.set_description(log_msg)
+            elif i % args.n_report_steps == 0:
+                print(log_msg) # Fallback print
 
-        '''
-        if (epoch % args.test_epochs == 0) and (i % args.visualize_every_batch == 0) and not (epoch == 0 and i == 0):
-            start = time.time()
+            if wandb:
+                wandb.log({"Batch NLL": loss.item(), "Gradient Norm": grad_norm}, commit=True)
 
-            if len(args.conditioning) > 0:
-                save_and_sample_conditional(args, device, model_ema, prop_dist, dataset_info, epoch=epoch)
-            save_and_sample_chain(model_ema, args, device, dataset_info, prop_dist, epoch=epoch,
-                                  batch_id=str(i))
-            sample_different_sizes_and_save(model_ema, nodes_dist, args, device, dataset_info,
-                                            prop_dist, epoch=epoch)
-            print(f'Sampling took {time.time() - start:.2f} seconds')
-
-            vis.visualize(f"outputs/{args.exp_name}/epoch_{epoch}_{i}", dataset_info=dataset_info, wandb=wandb)
-            vis.visualize_chain(f"outputs/{args.exp_name}/epoch_{epoch}_{i}/chain/", dataset_info, wandb=wandb)
-            if len(args.conditioning) > 0:
-                vis.visualize_chain("outputs/%s/epoch_%d/conditional/" % (args.exp_name, epoch), dataset_info,
-                                    wandb=wandb, mode='conditional')
-        '''    
-            
-        wandb.log({"Batch NLL": nll.item()}, commit=True)
         if args.break_train_epoch:
             break
-    wandb.log({"Train Epoch NLL": np.mean(nll_epoch)}, commit=False)
+
+    if rank == 0:
+        epoch_nll_avg = np.mean(nll_epoch) if nll_epoch else 0
+        if wandb:
+            wandb.log({"Train Epoch NLL": epoch_nll_avg}, commit=False) # Commit handled by validation step
 
 
-def check_mask_correct(variables, node_mask):
-    for i, variable in enumerate(variables):
-        if len(variable) > 0:
-            assert_correctly_masked(variable, node_mask)
-
-
-def test(args, loader, epoch, eval_model, device, dtype, property_norms, nodes_dist, partition='Test'):
+def test(args, loader, epoch, eval_model, device, dtype, property_norms, nodes_dist, partition='Test'): # Removed nodes_dist
     eval_model.eval()
     with torch.no_grad():
-        nll_epoch = 0
-        n_samples = 0
+        nll_epoch = 0.0
+        n_samples = 0 # Count samples correctly
 
         n_iterations = len(loader)
         for i, batch in enumerate(loader):
-            x = batch['positions'].to(device, dtype) # [B, N, 3]
+            # Unpack batch
+            x = batch['positions'].to(device, dtype)         # [B, N, 3, 3]
+            molecule_mask = batch['molecule_mask'].to(device, dtype) # [B, N]
+            atom_mask = batch['atom_mask'].to(device, dtype)     # [B, N*3]
+            one_hot = batch['one_hot'].to(device, dtype)         # [B, N*3, num_types]
+            atom_edge_mask = batch['edge_mask'].to(device, dtype)  # [B, N*3, N*3]
+
             batch_size = x.shape[0]
-            if torch.isnan(x).any():
-                raise ValueError("NaN detected in input data!")
-            node_mask = batch['atom_mask'].to(device, dtype).unsqueeze(2) # [B, N, 1]
-            edge_mask = batch['edge_mask'].to(device, dtype) # [B*N*N, 1]
-            one_hot = torch.ones_like(x, dtype=dtype, device=device) # [B, N, 3]
-            one_hot = node_mask.clone() # [B, N, 1]
-            charges = torch.zeros(0).to(device, dtype)
-            '''
-        for i, data in enumerate(loader):
-            x = data['positions'].to(device, dtype)
-            batch_size = x.size(0)
-            node_mask = data['atom_mask'].to(device, dtype).unsqueeze(2)
-            edge_mask = data['edge_mask'].to(device, dtype)
-            one_hot = data['one_hot'].to(device, dtype)
-            charges = (data['charges'] if args.include_charges else torch.zeros(0)).to(device, dtype)
-            '''
 
-            '''
-            if args.augment_noise > 0:
-                # Add noise eps ~ N(0, augment_noise) around points.
-                eps = sample_center_gravity_zero_gaussian_with_mask(x.size(),
-                                                                    x.device,
-                                                                    node_mask)
-                x = x + eps * args.augment_noise
-            '''
+            # Center positions
+            x_flat = x.view(x.shape[0], -1, 3)
+            atom_mask_unsqueeze = atom_mask.unsqueeze(-1)
+            x_centered_flat = diffusion_utils.remove_mean_with_mask(x_flat, atom_mask_unsqueeze)
+            x = x_centered_flat.view(x.shape)
 
-            #x = remove_mean_with_mask(x, node_mask)
-            #check_mask_correct([x, one_hot, charges], node_mask)
-            #assert_mean_zero_with_mask(x, node_mask)
-
-            h = {'categorical': one_hot, 'integer': charges}
-
-            '''
-            if len(args.conditioning) > 0:
-                context = qm9utils.prepare_context(args.conditioning, data, property_norms).to(device, dtype)
-                assert_correctly_masked(context, node_mask)
-            else:
-                context = None
-            '''
+            h = {'categorical': one_hot, 'integer': torch.zeros(0).to(device)}
             context = None
 
-            # transform batch through flow
-            nll, _, _ = losses.compute_loss_and_nll(args, eval_model, nodes_dist, x, h,
-                                                    node_mask, edge_mask, context)
-            # standard nll from forward KL
+            # === Call Diffusion Model Forward (calculates NLL directly) ===
+            nll = eval_model(x, h, node_mask=atom_mask, edge_mask=atom_edge_mask, context=context)
 
-            nll_epoch += nll.item() * batch_size
+            nll_epoch += nll.item() * batch_size # Accumulate total NLL for the epoch
             n_samples += batch_size
+
             if i % args.n_report_steps == 0:
-                print(f"\r {partition} NLL \t epoch: {epoch}, iter: {i}/{n_iterations}, "
-                      f"NLL: {nll_epoch/n_samples:.2f}")
+                 current_avg_nll = nll_epoch / n_samples if n_samples > 0 else 0
+                 print(f"\r {partition} NLL \t epoch: {epoch}, iter: {i}/{n_iterations}, "
+                       f"Avg NLL: {current_avg_nll:.4f}")
 
-    return nll_epoch/n_samples
-
-'''
-def save_and_sample_chain(model, args, device, dataset_info, prop_dist,
-                          epoch=0, id_from=0, batch_id=''):
-    one_hot, charges, x = sample_chain(args=args, device=device, flow=model,
-                                       n_tries=1, dataset_info=dataset_info, prop_dist=prop_dist)
-
-    vis.save_xyz_file(f'outputs/{args.exp_name}/epoch_{epoch}_{batch_id}/chain/',
-                      one_hot, charges, x, dataset_info, id_from, name='chain')
-
-    return one_hot, charges, x
-
-
-def sample_different_sizes_and_save(model, nodes_dist, args, device, dataset_info, prop_dist,
-                                    n_samples=5, epoch=0, batch_size=100, batch_id=''):
-    batch_size = min(batch_size, n_samples)
-    for counter in range(int(n_samples/batch_size)):
-        nodesxsample = nodes_dist.sample(batch_size)
-        one_hot, charges, x, node_mask = sample(args, device, model, prop_dist=prop_dist,
-                                                nodesxsample=nodesxsample,
-                                                dataset_info=dataset_info)
-        print(f"Generated molecule: Positions {x[:-1, :, :]}")
-        vis.save_xyz_file(f'outputs/{args.exp_name}/epoch_{epoch}_{batch_id}/', one_hot, charges, x, dataset_info,
-                          batch_size * counter, name='molecule')
-
-# TODO: Check this function
-def sample_different_sizes_and_save(model, nodes_dist, args, device, dataset_info, prop_dist,
-                                    n_samples=5, epoch=0, batch_size=100, batch_id=''):
-    batch_size = min(batch_size, n_samples)
-    for counter in range(int(n_samples/batch_size)):
-        nodesxsample = nodes_dist.sample(batch_size)
-        _, _, x, _ = sample(args, device, model, prop_dist=prop_dist,
-                                                nodesxsample=nodesxsample,
-                                                dataset_info=dataset_info)
-    
-        # Save as XYZ (each node = H2O)
-        with open(f'outputs/{args.exp_name}/water_cluster.xyz', 'w') as f:
-            for pos in x[0]:  # First sample in batch
-                f.write(f"H2O {pos[0]} {pos[1]} {pos[2]}\n")
-                
-# TODO: Replace with xyz check
-def analyze_and_save(epoch, model_sample, nodes_dist, args, device, dataset_info, prop_dist,
-                     n_samples=1000, batch_size=100):
-    print(f'Analyzing molecule stability at epoch {epoch}...')
-    batch_size = min(batch_size, n_samples)
-    assert n_samples % batch_size == 0
-    molecules = {'one_hot': [], 'x': [], 'node_mask': []}
-    for i in range(int(n_samples/batch_size)):
-        nodesxsample = nodes_dist.sample(batch_size)
-        one_hot, charges, x, node_mask = sample(args, device, model_sample, dataset_info, prop_dist,
-                                                nodesxsample=nodesxsample)
-
-        molecules['one_hot'].append(one_hot.detach().cpu())
-        molecules['x'].append(x.detach().cpu())
-        molecules['node_mask'].append(node_mask.detach().cpu())
-
-    molecules = {key: torch.cat(molecules[key], dim=0) for key in molecules}
-    validity_dict, rdkit_tuple = analyze_stability_for_molecules(molecules, dataset_info)
-
-    wandb.log(validity_dict)
-    if rdkit_tuple is not None:
-        wandb.log({'Validity': rdkit_tuple[0][0], 'Uniqueness': rdkit_tuple[0][1], 'Novelty': rdkit_tuple[0][2]})
-    return validity_dict
-
-
-def save_and_sample_conditional(args, device, model, prop_dist, dataset_info, epoch=0, id_from=0):
-    one_hot, charges, x, node_mask = sample_sweep_conditional(args, device, model, dataset_info, prop_dist)
-
-    vis.save_xyz_file(
-        'outputs/%s/epoch_%d/conditional/' % (args.exp_name, epoch), one_hot, charges, x, dataset_info,
-        id_from, name='conditional', node_mask=node_mask)
-
-    return one_hot, charges, x
-'''
+    avg_nll_epoch = nll_epoch / n_samples if n_samples > 0 else 0
+    print(f"\n{partition} Epoch {epoch} Average NLL: {avg_nll_epoch:.4f}")
+    return avg_nll_epoch

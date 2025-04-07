@@ -1,7 +1,14 @@
 water_config = {
     'name': 'water',
-    'atom_encoder': {'H2O': 0},          # Single particle type
-    'atom_decoder': ['H2O'],
+    'atom_encoder': {'O': 0, 'H': 1},   # Encoder for Oxygen and Hydrogen
+    'atom_decoder': ['O', 'H'],        # Decoder
+    'num_atom_types': 2,               # Number of atom types (O, H)
+    'atoms_per_molecule': 3,           # Fixed: O, H, H
+    # 'n_nodes': Histogram of *molecule* counts if needed.
+    # 'max_n_nodes': Max *molecules* per sample.
+    #'colors_dic': ['#FF0D0D', '#FFFFFF'],  # Red for O, White for H
+    #'radius_dic': [0.73, 0.37],          # Approximate radii in Angstrom
+    #'with_h': True                      # Explicitly modelling H
 }
 
 '''

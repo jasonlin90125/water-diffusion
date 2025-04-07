@@ -1,6 +1,14 @@
 import torch
 import numpy as np
 
+def gaussian_KL_for_dimension_batch(q_mu, q_sigma, p_mu, p_sigma, d):
+    # q_mu [B, N_atoms, 3], q_sigma [B,], p_mu [B, N_atoms, 3], p_sigma [B,]
+    # d = degrees of freedom [B,]
+    mu_norm2 = sum_except_batch((q_mu - p_mu)**2) # [B,]
+    term1 = d * torch.log(p_sigma / q_sigma)             # [B,]
+    term2 = 0.5 * (d * q_sigma**2 + mu_norm2) / (p_sigma**2) # [B,]
+    term3 = -0.5 * d                                     # [B,]
+    return term1 + term2 + term3
 
 class EMA():
     def __init__(self, beta):
@@ -27,7 +35,7 @@ def remove_mean(x):
     x = x - mean
     return x
 
-
+'''
 def remove_mean_with_mask(x, node_mask):
     masked_max_abs_value = (x * (1 - node_mask)).abs().sum().item()
     assert masked_max_abs_value < 1e-5, f'Error {masked_max_abs_value} too high'
@@ -36,19 +44,58 @@ def remove_mean_with_mask(x, node_mask):
     mean = torch.sum(x, dim=1, keepdim=True) / N
     x = x - mean * node_mask
     return x
+'''
+def remove_mean_with_mask(x, node_mask):
+    # x: [B, N, D] or [B, N, 3, 3]
+    # node_mask: [B, N, 1] or [B, N] (needs broadcasting)
+    if x.dim() == 4: # Handle [B, N, 3, 3] by calculating COM
+        # node_mask should be molecule_mask [B, N]
+        if node_mask.dim() == 2: node_mask = node_mask.unsqueeze(-1).unsqueeze(-1) #[B, N, 1, 1]
+        num_molecules = node_mask.sum(dim=1, keepdim=True).clamp(min=1) #[B, 1, 1, 1]
+        # Calculate COM of each molecule, then mean COM over valid molecules
+        com_per_molecule = x.mean(dim=2, keepdim=True) # [B, N, 1, 3]
+        mean_com = (com_per_molecule * node_mask).sum(dim=1, keepdim=True) / num_molecules # [B, 1, 1, 3]
+        x = x - mean_com # Broadcast and subtract
+        x = x * node_mask # Ensure padded values remain zero
+    elif x.dim() == 3: # Standard atom-level centering
+        # node_mask should be atom_mask [B, N, 1]
+        if node_mask.dim() == 2: node_mask = node_mask.unsqueeze(-1) # Ensure [B, N, 1]
+        N = node_mask.sum(dim=1, keepdim=True).clamp(min=1) # [B, 1, 1]
+        mean = torch.sum(x*node_mask, dim=1, keepdim=True) / N # [B, 1, D]
+        x = (x - mean) * node_mask
+    else:
+        raise ValueError("Input tensor must have 3 or 4 dimensions")
+    return x
 
 
 def assert_mean_zero(x):
     mean = torch.mean(x, dim=1, keepdim=True)
     assert mean.abs().max().item() < 1e-4
 
-
+'''
 def assert_mean_zero_with_mask(x, node_mask, eps=1e-10):
     assert_correctly_masked(x, node_mask)
     largest_value = x.abs().max().item()
     error = torch.sum(x, dim=1, keepdim=True).abs().max().item()
     rel_error = error / (largest_value + eps)
     assert rel_error < 1e-2, f'Mean is not zero, relative_error {rel_error}'
+'''
+def assert_mean_zero_with_mask(x, node_mask, eps=1e-10):
+     if x.dim() == 4: # Handle [B, N, 3, 3]
+         if node_mask.dim()==2: node_mask = node_mask.unsqueeze(-1).unsqueeze(-1) # Mol mask [B,N,1,1]
+         com_per_molecule = x.mean(dim=2, keepdim=True) # [B, N, 1, 3]
+         num_molecules = node_mask.sum(dim=1, keepdim=True).clamp(min=1)
+         mean_com = (com_per_molecule * node_mask).sum(dim=1) / num_molecules # [B, 3]
+         error = mean_com.abs().max().item()
+         assert error < 1e-2, f'Mean COM is not zero, error {error}'
+     elif x.dim() == 3: # Standard atom centering
+         if node_mask.dim() == 2: node_mask = node_mask.unsqueeze(-1)
+         N = node_mask.sum(dim=1, keepdim=True).clamp(min=1)
+         mean = torch.sum(x*node_mask, dim=1, keepdim=True) / N
+         error = mean.abs().max().item()
+         assert error < 1e-2, f'Mean is not zero, error {error}'
+     else:
+          raise ValueError("Input tensor must have 3 or 4 dimensions")
 
 
 def assert_correctly_masked(variable, node_mask):
