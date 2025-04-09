@@ -4,7 +4,7 @@ from egnn.egnn_new import EGNN, GNN
 from equivariant_diffusion.utils import remove_mean, remove_mean_with_mask
 import numpy as np
 
-
+'''
 class EGNN_dynamics_QM9(nn.Module):
     def __init__(self, in_node_nf, context_node_nf,
                  n_dims, hidden_nf=64, device='cpu',
@@ -132,6 +132,7 @@ class EGNN_dynamics_QM9(nn.Module):
         else:
             self._edges_dict[n_nodes] = {}
             return self.get_adj_matrix(n_nodes, batch_size, device)
+'''
 
 class EGNN_dynamics_water(nn.Module):
     def __init__(self, in_node_nf, context_node_nf,
@@ -178,49 +179,49 @@ class EGNN_dynamics_water(nn.Module):
         bs, n_nodes, _, dims = xh.shape # changed from bs, n_nodes, dims to bs, n_nodes, _, dims
         h_dims = dims - self.n_dims
 
-        # Reshape to (B, N*3, D) where 3 is number of atom per molecule
-        xh = xh.view(bs, n_nodes * 3, -1)
+        #print('xh.shape', xh.shape) # [B, N, 3, 3+2]
+        #print('h_dims', h_dims) # [2]
 
-        # Reshape to (B*N*3, D) for processing
-        node_mask = node_mask.squeeze(-1).squeeze(-1)  # Remove last two singleton dimensions → (B, M)
-        node_mask = node_mask.unsqueeze(-1).expand(-1, -1, 3)  # Add atom dimension → (B, M, 3)
-        node_mask = node_mask.reshape(-1, 1)  # Flatten to (B*M*3, 1)
-
-        # Reshape to (B*N*3*N*3, 1) for processing
-        edge_mask = edge_mask.repeat_interleave(3, dim=1)
-        edge_mask = edge_mask.repeat_interleave(3, dim=2)
-        edge_mask = edge_mask.view(-1, 1)
-
-        #edges = self.get_adj_matrix(n_nodes, bs, self.device)
-        edges = self.get_adj_matrix(n_nodes * 3, bs, self.device)
+        edges = self.get_adj_matrix(n_nodes, bs, self.device)
         edges = [x.to(self.device) for x in edges]
-        #node_mask = node_mask.view(bs*n_nodes, 1)
-        #edge_mask = edge_mask.view(bs*n_nodes*n_nodes, 1)
-        #xh = xh.view(bs*n_nodes, -1).clone() * node_mask
-        xh = xh.view(bs*n_nodes*3, -1).clone() * node_mask
-        x = xh[:, :self.n_dims].clone()
-        if h_dims == 0:
-            #h = torch.ones(bs*n_nodes, 1).to(self.device)
-            h = torch.ones(bs*n_nodes*3, 1).to(self.device)
-        else:
-            h = xh[:, self.n_dims:].clone()
 
-        '''
+        node_mask = node_mask.view(bs*n_nodes, 1, 1) # [B*N, 1, 1]
+        edge_mask = edge_mask.view(bs*n_nodes*n_nodes, 1) # [B*N*N, 1]
+        xh = xh.view(bs*n_nodes, 3, -1).clone() * node_mask # [B*N, 3, 5] * [B*N, 1, 1] = [B*N, 3, 5]
+        x = xh[..., :self.n_dims].clone() # [B*N, 3, 3]
+
+        if h_dims == 0:
+            h = torch.ones(bs*n_nodes, 3, 1).to(self.device) # [B*N, 3, 1] filled with 1s
+        else:
+            h = xh[..., self.n_dims:].clone() # [B*N, 3, 2]
+            print('h.shape', h.shape) # [B*N, 3, 2]
+
         if self.condition_time:
             if np.prod(t.size()) == 1:
                 # t is the same for all elements in batch.
-                h_time = torch.empty_like(h[:, 0:1]).fill_(t.item())
+                h_time = torch.empty_like(h[..., 0:1]).fill_(t.item())
+                print('h_time.shape t.size == 1', h_time.shape) # [B*N, 1]
             else:
+                # print('t.shape', t.shape) # [B, 1]
                 # t is different over the batch dimension.
-                h_time = t.view(bs, 1).repeat(1, n_nodes)
-                h_time = h_time.view(bs * n_nodes, 1)
-            h = torch.cat([h, h_time], dim=1)
+                h_time = t.view(bs, 1).repeat(1, n_nodes) # [B, 1] -> [B, N]
+                h_time = h_time.view(bs * n_nodes, 1) # [B*N, 1]
+                #h_time = h_time.repeat(1, 3) # [B*N, 3]
+                #print('h_time.shape', h_time.shape) # [B*N, 1]
+                #h_time = t.view(bs, 1).repeat(1, n_nodes) # Shape: [B, N]
+                h_time = h_time.unsqueeze(1) # Shape: [B*N, 1, 1]
+                h_time = h_time.expand(-1, 3, -1) # Shape: [B*N, 3, 1]
+            h = torch.cat([h, h_time], dim=2) # [B*N, 3, 2] + [B*N, 3, 1] = [B*N, 3, 3]
 
+        '''
         if context is not None:
-            # We're conditioning, awesome!
+            print("We're conditioning, awesome!")
             context = context.view(bs*n_nodes, self.context_node_nf)
             h = torch.cat([h, context], dim=1)
         '''
+
+        print('h.shape', h.shape) # [B*N, 3, 3]
+        print('x.shape', x.shape) # [B*N, 3, 3]
 
         if self.mode == 'egnn_dynamics':
             h_final, x_final = self.egnn(h, x, edges, node_mask=node_mask, edge_mask=edge_mask)
@@ -230,9 +231,12 @@ class EGNN_dynamics_water(nn.Module):
             output = self.gnn(xh, edges, node_mask=node_mask)
             vel = output[:, 0:3] * node_mask
             h_final = output[:, 3:]
-
         else:
             raise Exception("Wrong mode %s" % self.mode)
+        
+        # print('h_final.shape', h_final.shape) # [B*N, 3]
+        # print('x_final.shape', x_final.shape) # [B*N, 3, 3]
+        # print('vel.shape', vel.shape) # [B*N, 3, 3]
 
         if context is not None:
             # Slice off context size:
@@ -240,10 +244,10 @@ class EGNN_dynamics_water(nn.Module):
 
         if self.condition_time:
             # Slice off last dimension which represented time.
-            h_final = h_final[:, :-1]
+            h_final = h_final[:, :-1] # [B*N, 2]
 
         #vel = vel.view(bs, n_nodes, -1)
-        vel = vel.view(bs, n_nodes, 3, -1)
+        vel = vel.view(bs, n_nodes, 3, -1) # [B, N, 3, 3]
 
         if torch.any(torch.isnan(vel)):
             print('Warning: detected nan, resetting EGNN output to zero.')
@@ -252,16 +256,16 @@ class EGNN_dynamics_water(nn.Module):
         if node_mask is None:
             vel = remove_mean(vel)
         else:
-            #vel = remove_mean_with_mask(vel, node_mask.view(bs, n_nodes, 1))
-            vel = remove_mean_with_mask(vel, node_mask.view(bs, n_nodes, 3, 1))
+            vel = remove_mean_with_mask(vel, node_mask.view(bs, n_nodes, 1))
+            #vel = remove_mean_with_mask(vel, node_mask.view(bs, n_nodes, 3, 1))
 
         if h_dims == 0:
             return vel
         else:
-            #h_final = h_final.view(bs, n_nodes, -1)
-            h_final = h_final.view(bs, n_nodes, 3, -1)
-            #return torch.cat([vel, h_final], dim=2)
-            return torch.cat([vel, h_final], dim=3)
+            h_final = h_final.view(bs, n_nodes, -1) # [B, N, 2]
+            #h_final = h_final.view(bs, n_nodes, 3, -1)
+            return torch.cat([vel, h_final], dim=2) # [B, N, 3, 3+2] = [B, N, 3, 5]
+            #return torch.cat([vel, h_final], dim=3)
 
     def get_adj_matrix(self, n_nodes, batch_size, device):
         if n_nodes in self._edges_dict:

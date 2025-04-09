@@ -1,7 +1,7 @@
 water_config = {
     'name': 'water',
-    'atom_encoder': {'H2O': 0},          # Single particle type
-    'atom_decoder': ['H2O'],
+    'atom_encoder': {'O': 0, 'H': 1},          # Single particle type
+    'atom_decoder': ['O', 'H'],                  # Decoder for visualization
 }
 
 '''

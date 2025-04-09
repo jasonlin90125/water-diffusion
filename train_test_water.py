@@ -26,10 +26,9 @@ def train_epoch(args, loader, epoch, model, model_dp, model_ema, ema, device, dt
             raise ValueError("NaN detected in input data!")
         node_mask = batch['atom_mask'].to(device, dtype).unsqueeze(-1).unsqueeze(-1) # [B, N, 1, 1]
         edge_mask = batch['edge_mask'].to(device, dtype) # [B, N, N]
-        one_hot = torch.zeros(x.shape[0], x.shape[1], 3, 1).to(device, dtype)
-        one_hot[:, :, 0] = 1 # oxygen
-        one_hot[:, :, 1] = 2 # hydrogen
-        one_hot[:, :, 2] = 2 # hydrogen
+        one_hot = torch.zeros(x.shape[0], x.shape[1], 3, 2).to(device, dtype)
+        one_hot[:, :, 0, 0] = 1
+        one_hot[:, :, 1:, 1] = 1
         #one_hot = node_mask.clone() # [B, N, 1, 1]
         charges = torch.zeros(0).to(device, dtype)
         '''

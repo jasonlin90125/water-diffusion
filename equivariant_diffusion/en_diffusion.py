@@ -255,7 +255,7 @@ class EnVariationalDiffusion(torch.nn.Module):
     """
     def __init__(
             self,
-            dynamics: models.EGNN_dynamics_QM9, in_node_nf: int, n_dims: int,
+            dynamics: models.EGNN_dynamics_water, in_node_nf: int, n_dims: int,
             timesteps: int = 1000, parametrization='eps', noise_schedule='learned',
             noise_precision=1e-4, loss_type='vlb', norm_values=(1., 1., 1.),
             norm_biases=(None, 0., 0.), include_charges=True):
@@ -613,7 +613,7 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         # Concatenate x, h[integer] and h[categorical].
         #xh = torch.cat([x, h['categorical'], h['integer']], dim=2)
-        xh = torch.cat([x, h['categorical'], h['integer']], dim=3)
+        xh = torch.cat([x, h['categorical'], h['integer']], dim=3) # !!! h['categorical'] must have 3 dimensions in the second dimension
         if torch.isnan(eps).any():
             print(f'x.size(0): {x.size(0)}, x.size(1): {x.size(1)}')
             print("Found NaNs!!!")
@@ -627,6 +627,9 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         # Neural net prediction.
         net_out = self.phi(z_t, t, node_mask, edge_mask, context)
+
+        print('net_out.shape', net_out.shape) # [32, 23, 11]
+        print('eps.shape', eps.shape) # [32, 23, 5]
 
         # Compute the error.
         error = self.compute_error(net_out, gamma_t, eps.unsqueeze(2))

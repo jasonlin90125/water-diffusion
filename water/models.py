@@ -9,8 +9,8 @@ from equivariant_diffusion.en_diffusion import EnVariationalDiffusion
 
 def get_model(args, device, dataset_info, dataloader_train):
     #histogram = dataset_info['n_nodes']
-    #in_node_nf = len(dataset_info['atom_decoder']) + int(args.include_charges)
-    in_node_nf = 1  # Single particle type
+    in_node_nf = len(dataset_info['atom_decoder']) + int(args.include_charges)
+    #in_node_nf = 1  # Single particle type
     #nodes_dist = DistributionNodes(histogram)
 
     # Remove charge-related logic
@@ -19,7 +19,7 @@ def get_model(args, device, dataset_info, dataloader_train):
 
     prop_dist = None
     nodes_dist = None
-    '''
+
     if len(args.conditioning) > 0:
         prop_dist = DistributionProperty(dataloader_train, args.conditioning)
 
@@ -28,18 +28,15 @@ def get_model(args, device, dataset_info, dataloader_train):
     else:
         print('Warning: dynamics model is _not_ conditioned on time.')
         dynamics_in_node_nf = in_node_nf
-    '''
 
     net_dynamics = EGNN_dynamics_water(
-        #in_node_nf=dynamics_in_node_nf, context_node_nf=args.context_node_nf,
-        in_node_nf=in_node_nf, 
-        context_node_nf=args.context_node_nf,
+        in_node_nf=dynamics_in_node_nf, context_node_nf=args.context_node_nf,
         n_dims=3, device=device, hidden_nf=args.nf,
         act_fn=torch.nn.SiLU(), n_layers=args.n_layers,
         attention=args.attention, tanh=args.tanh, mode=args.model, norm_constant=args.norm_constant,
         inv_sublayers=args.inv_sublayers, sin_embedding=args.sin_embedding,
         normalization_factor=args.normalization_factor, aggregation_method=args.aggregation_method,
-        condition_time=False) # adding condition_time=False to the constructor
+        condition_time=args.condition_time) # adding condition_time=False to the constructor
 
     if args.probabilistic_model == 'diffusion':
         vdm = EnVariationalDiffusion(
@@ -47,8 +44,8 @@ def get_model(args, device, dataset_info, dataloader_train):
             in_node_nf=in_node_nf,
             n_dims=3,
             timesteps=args.diffusion_steps,
-            noise_schedule=args.diffusion_noise_schedule, # TODO: cosine instead of polynomial_2?
-            noise_precision=args.diffusion_noise_precision, # TODO: check if this is correct
+            noise_schedule=args.diffusion_noise_schedule,
+            noise_precision=args.diffusion_noise_precision,
             loss_type=args.diffusion_loss_type,
             norm_values=args.normalize_factors,
             include_charges=args.include_charges
