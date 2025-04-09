@@ -628,8 +628,8 @@ class EnVariationalDiffusion(torch.nn.Module):
         # Neural net prediction.
         net_out = self.phi(z_t, t, node_mask, edge_mask, context)
 
-        print('net_out.shape', net_out.shape) # [32, 23, 11]
-        print('eps.shape', eps.shape) # [32, 23, 5]
+        #print('net_out.shape', net_out.shape) # [B, N, 3, 5]
+        #print('eps.shape', eps.shape) # [B, N, 5]
 
         # Compute the error.
         error = self.compute_error(net_out, gamma_t, eps.unsqueeze(2))

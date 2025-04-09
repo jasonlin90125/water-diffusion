@@ -194,7 +194,7 @@ class EGNN_dynamics_water(nn.Module):
             h = torch.ones(bs*n_nodes, 3, 1).to(self.device) # [B*N, 3, 1] filled with 1s
         else:
             h = xh[..., self.n_dims:].clone() # [B*N, 3, 2]
-            print('h.shape', h.shape) # [B*N, 3, 2]
+            #print('h.shape', h.shape) # [B*N, 3, 2]
 
         if self.condition_time:
             if np.prod(t.size()) == 1:
@@ -220,8 +220,8 @@ class EGNN_dynamics_water(nn.Module):
             h = torch.cat([h, context], dim=1)
         '''
 
-        print('h.shape', h.shape) # [B*N, 3, 3]
-        print('x.shape', x.shape) # [B*N, 3, 3]
+        #print('h.shape', h.shape) # [B*N, 3, 3]
+        #print('x.shape', x.shape) # [B*N, 3, 3]
 
         if self.mode == 'egnn_dynamics':
             h_final, x_final = self.egnn(h, x, edges, node_mask=node_mask, edge_mask=edge_mask)
@@ -234,17 +234,17 @@ class EGNN_dynamics_water(nn.Module):
         else:
             raise Exception("Wrong mode %s" % self.mode)
         
-        # print('h_final.shape', h_final.shape) # [B*N, 3]
-        # print('x_final.shape', x_final.shape) # [B*N, 3, 3]
-        # print('vel.shape', vel.shape) # [B*N, 3, 3]
+        #print('h_final.shape', h_final.shape) # [B*N, 3, 3]
+        #print('x_final.shape', x_final.shape) # [B*N, 3, 3]
+        #print('vel.shape', vel.shape) # [B*N, 3, 3]
 
         if context is not None:
             # Slice off context size:
-            h_final = h_final[:, :-self.context_node_nf]
+            h_final = h_final[..., :-self.context_node_nf]
 
         if self.condition_time:
             # Slice off last dimension which represented time.
-            h_final = h_final[:, :-1] # [B*N, 2]
+            h_final = h_final[..., :-1] # [B*N, 3, 2]
 
         #vel = vel.view(bs, n_nodes, -1)
         vel = vel.view(bs, n_nodes, 3, -1) # [B, N, 3, 3]
@@ -256,16 +256,16 @@ class EGNN_dynamics_water(nn.Module):
         if node_mask is None:
             vel = remove_mean(vel)
         else:
-            vel = remove_mean_with_mask(vel, node_mask.view(bs, n_nodes, 1))
-            #vel = remove_mean_with_mask(vel, node_mask.view(bs, n_nodes, 3, 1))
+            #vel = remove_mean_with_mask(vel, node_mask.view(bs, n_nodes, 1))
+            vel = remove_mean_with_mask(vel, node_mask.view(bs, n_nodes, 1, 1))
 
         if h_dims == 0:
             return vel
         else:
-            h_final = h_final.view(bs, n_nodes, -1) # [B, N, 2]
-            #h_final = h_final.view(bs, n_nodes, 3, -1)
-            return torch.cat([vel, h_final], dim=2) # [B, N, 3, 3+2] = [B, N, 3, 5]
-            #return torch.cat([vel, h_final], dim=3)
+            #h_final = h_final.view(bs, n_nodes, -1)
+            h_final = h_final.view(bs, n_nodes, 3, -1) # [B, N, 3, 2]
+            #return torch.cat([vel, h_final], dim=2) 
+            return torch.cat([vel, h_final], dim=3) # [B, N, 3, 3+2] = [B, N, 3, 5]
 
     def get_adj_matrix(self, n_nodes, batch_size, device):
         if n_nodes in self._edges_dict:

@@ -35,7 +35,8 @@ class GCL(nn.Module):
             #print('Source shape', source.shape) # [B*N*N, 256]
             #print('Target shape', target.shape) # [B*N*N, 256]
             #print('Edge attr shape', edge_attr.shape) # [B*N*N, 6]
-            out = torch.cat([source, target, edge_attr], dim=1)
+            out = torch.cat([source.sum(dim=1), target.sum(dim=1), edge_attr], dim=1)
+            #print('out shape', out.shape) # [B*N*N, 256*2 + 6]
         mij = self.edge_mlp(out)
 
         if self.attention:
@@ -55,24 +56,27 @@ class GCL(nn.Module):
         agg = unsorted_segment_sum(edge_attr, row, num_segments=x.size(0),
                                    normalization_factor=self.normalization_factor,
                                    aggregation_method=self.aggregation_method)
+        #print('agg.shape', agg.shape) # [B*N, 256]
+        #print('x.shape', x.shape) # [B*N, 3, 256]
         if node_attr is not None:
-            agg = torch.cat([x, agg, node_attr], dim=1)
+            agg = torch.cat([x.sum(dim=1), agg, node_attr], dim=1)
         else:
-            agg = torch.cat([x, agg], dim=1)
-        out = x + self.node_mlp(agg)
+            agg = torch.cat([x.sum(dim=1), agg], dim=1)
+        out = x + self.node_mlp(agg).unsqueeze(1)
+        #print('out shape', out.shape) # [B*N, 3, 256]
         return out, agg
 
     def forward(self, h, edge_index, edge_attr=None, node_attr=None, node_mask=None, edge_mask=None):
         row, col = edge_index
-        #print('h shape init', h.shape) # [B*N, 256]
+        #print('h shape init', h.shape) # [B*N, 3, 256]
         edge_feat, mij = self.edge_model(h[row], h[col], edge_attr, edge_mask)
         h, agg = self.node_model(h, edge_index, edge_feat, node_attr)
-        #print('h shape after node_model', h.shape) # [B*N, 256]
+        #print('h shape after node_model', h.shape) # [B*N, 3, 256]
         #print('node_mask shape', node_mask.shape) # [B*N, 1, 1]
         if node_mask is not None:
-            #h = h * node_mask
-            h = h * node_mask.squeeze(-1) # [B*N, 256] * [B*N, 1]
-        #print('h shape after node_mask:', h.shape) # [B*N, 256]
+            h = h * node_mask # [B*N, 3, 256] * [B*N, 1, 1]
+            #h = h * node_mask.squeeze(-1) # [B*N, 256] * [B*N, 1] old code
+        #print('h shape after node_mask:', h.shape) # [B*N, 3, 256]
         return h, mij
 
 
@@ -100,11 +104,11 @@ class EquivariantUpdate(nn.Module):
         #print('row.shape', row.shape) # [B*N*N]
         #print('col.shape', col.shape) # [B*N*N]
         #print('coord.shape', coord.shape) # [B*N, 3, 3]
-        #print('h.shape', h.shape) # [B*N, B*N, 256]
-        #print('h[row].shape', h[row].shape) # [B*N*N, 256]
-        #print('h[col].shape', h[col].shape) # [B*N*N, 256]
+        #print('h.shape', h.shape) # [B*N, 3, 256]
+        #print('h[row].shape', h[row].shape) # [B*N*N, 3, 256]
+        #print('h[col].shape', h[col].shape) # [B*N*N, 3, 256]
         #print('edge_attr.shape', edge_attr.shape) # [B*N*N, 6]
-        input_tensor = torch.cat([h[row], h[col], edge_attr], dim=1) # [B*N*N, 256*2 + 6]
+        input_tensor = torch.cat([h[row].sum(dim=1), h[col].sum(dim=1), edge_attr], dim=1) # [B*N*N, 256*2 + 6]
         if self.tanh:
             #print('coord_diff.shape', coord_diff.shape) # [B*N*N, 3, 3]
             #print('torch.tanh(self.coord_mlp(input_tensor)).shape', torch.tanh(self.coord_mlp(input_tensor)).shape) # [B*N*N, 1]
@@ -175,13 +179,13 @@ class EquivariantBlock(nn.Module):
         edge_attr = torch.cat([distances, edge_attr], dim=1)
         for i in range(0, self.n_layers):
             h, _ = self._modules["gcl_%d" % i](h, edge_index, edge_attr=edge_attr, node_mask=node_mask, edge_mask=edge_mask)
-        #print('h.shape after GCL', h.shape) # [B*N, 256]
+        #print('h.shape after GCL', h.shape) # [B*N, 3, 256]
         x = self._modules["gcl_equiv"](h, x, edge_index, coord_diff, edge_attr, node_mask, edge_mask) # [B*N, 3, 3]
         #print('x.shape after equiv', x.shape) # [B*N, 3, 3]
 
         # Important, the bias of the last linear might be non-zero
         if node_mask is not None:
-            h = h * node_mask.squeeze(1)
+            h = h * node_mask
         return h, x
 
 
@@ -222,7 +226,7 @@ class EGNN(nn.Module):
     def forward(self, h, x, edge_index, node_mask=None, edge_mask=None):
         # Edit Emiel: Remove velocity as input
         # print('x.shape', x.shape) # [B*N, 3, 3]
-        # print('h.shape', h.shape) # [B*N, 3]
+        # print('h.shape', h.shape) # [B*N, 3, 3]
         # print('node_mask.shape', node_mask.shape) # [B*N, 1, 1]
         # print('edge_mask.shape', edge_mask.shape) # [B*N*N, 1]
 
@@ -237,7 +241,7 @@ class EGNN(nn.Module):
         # Important, the bias of the last linear might be non-zero
         h = self.embedding_out(h)
         if node_mask is not None:
-            h = h * node_mask.squeeze(1)
+            h = h * node_mask
         return h, x
 
 # Not used currently
