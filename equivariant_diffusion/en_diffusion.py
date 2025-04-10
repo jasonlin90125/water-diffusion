@@ -616,7 +616,7 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         # Sample zt ~ Normal(alpha_t x, sigma_t)
         eps = self.sample_combined_position_feature_noise(
-            n_samples=x.size(0), n_nodes=x.size(1), node_mask=node_mask.squeeze(-1))
+            n_samples=x.size(0), n_nodes=x.size(1), node_mask=node_mask.squeeze(-1)) # [B, N, 5]
 
         # Concatenate x, h[integer] and h[categorical].
         #xh = torch.cat([x, h['categorical'], h['integer']], dim=2)
@@ -792,12 +792,12 @@ class EnVariationalDiffusion(torch.nn.Module):
         Samples mean-centered normal noise for z_x, and standard normal noise for z_h.
         """
         z_x = utils.sample_center_gravity_zero_gaussian_with_mask(
-            size=(n_samples, n_nodes, 3, self.n_dims), device=node_mask.device,
-            node_mask=node_mask) # [B, N, 3, 3]
+            size=(n_samples, n_nodes, self.n_dims), device=node_mask.device,
+            node_mask=node_mask) # [B, N, 3]
         z_h = utils.sample_gaussian_with_mask(
-            size=(n_samples, n_nodes, 3, self.in_node_nf), device=node_mask.device,
-            node_mask=node_mask) # [B, N, 3, 2]
-        z = torch.cat([z_x, z_h], dim=3)
+            size=(n_samples, n_nodes, self.in_node_nf), device=node_mask.device,
+            node_mask=node_mask) # [B, N, 2] this is probably wrong, may have to be [B, N, 3, 2]
+        z = torch.cat([z_x, z_h], dim=2) # change to dim=3 if expand
         return z
 
     @torch.no_grad()

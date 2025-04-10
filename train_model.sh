@@ -13,7 +13,7 @@
 #SBATCH --mail-user=shuhang@unc.edu
 
 # Activate conda environment
-source $HOME/anaconda3/etc/profile.d/conda.sh
+source $HOME/miniconda3/etc/profile.d/conda.sh
 conda activate diffusion
 
 module load cuda/12.5

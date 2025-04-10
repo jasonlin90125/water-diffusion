@@ -108,8 +108,8 @@ def center_gravity_zero_gaussian_log_likelihood_with_mask(x, node_mask):
 
 
 def sample_center_gravity_zero_gaussian_with_mask(size, device, node_mask):
-    #assert len(size) == 3
-    assert len(size) == 4
+    assert len(size) == 3 # [B, N, 3]
+    #assert len(size) == 4 # [B, N, 3, 3]
     x = torch.randn(size, device=device)
 
     x_masked = x * node_mask
