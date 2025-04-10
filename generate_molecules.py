@@ -37,20 +37,25 @@ def sample(args, device, generative_model, dataset_info,
     #assert int(torch.max(nodesxsample)) <= max_n_nodes
     batch_size = len(nodesxsample)
 
-    node_mask = torch.zeros(batch_size, max_n_nodes)
+    node_mask = torch.zeros(batch_size, max_n_nodes, device=device) # [B, N]
     for i in range(batch_size):
         node_mask[i, 0:nodesxsample[i]] = 1
 
-    # Compute edge_mask
-    edge_mask = node_mask.unsqueeze(1) * node_mask.unsqueeze(2)
-    diag_mask = ~torch.eye(edge_mask.size(1), dtype=torch.bool).unsqueeze(0)
+    # Create edge_mask from node_mask
+    edge_mask = (node_mask.unsqueeze(1) * node_mask.unsqueeze(2)).to(device)  # [B, N, N]
+    
+    # Remove self-edges
+    diag_mask = ~torch.eye(max_n_nodes, dtype=torch.bool, device=device).unsqueeze(0)
     edge_mask *= diag_mask
-    edge_mask = edge_mask.view(batch_size * max_n_nodes * max_n_nodes, 1).to(device)
-    node_mask = node_mask.unsqueeze(2).to(device)
 
     context = None
 
     if args.probabilistic_model == 'diffusion':
+        #print('batch_size', batch_size) # 10
+        #print('max_n_nodes', max_n_nodes) # 35
+        #print('node_mask', node_mask.shape) # [B, N]
+        #print('edge_mask', edge_mask.shape) # [B, N, N]
+        node_mask = node_mask.unsqueeze(-1).unsqueeze(-1) # [B, N, 1, 1]
         x, h = generative_model.sample(batch_size, max_n_nodes, node_mask, edge_mask, context, fix_noise=fix_noise)
 
         #assert_correctly_masked(x, node_mask)
@@ -65,6 +70,11 @@ def sample(args, device, generative_model, dataset_info,
 
     else:
         raise ValueError(args.probabilistic_model)
+
+    print('one_hot.shape', one_hot.shape)
+    #print('charges', charges.shape)
+    #print('x', x.shape)
+    #print('node_mask', node_mask.shape)
 
     return one_hot, charges, x, node_mask
 
@@ -114,6 +124,7 @@ def get_args():
     args = parser.parse_args()
     return args
 
+'''
 def save_oxygen_pdb(xyz_coordinates, output_path):
     """Save a PDB file with only oxygen atoms given XYZ coordinates."""
     with open(output_path, 'w') as f:
@@ -121,7 +132,22 @@ def save_oxygen_pdb(xyz_coordinates, output_path):
         for coord in xyz_coordinates:
             x, y, z = coord
             f.write(f"ATOM  {atom_index:5d}  O   HOH A   1    {x*10:8.3f}{y*10:8.3f}{z*10:8.3f}  1.00  0.00           O\n")
+            atom_index += 1 
+'''
+
+def save_pdb_from_tensor(coords, filename):
+    with open(filename, 'w') as f:
+        atom_index = 1
+        for mol_idx, molecule in enumerate(coords):
+            # O atom
+            x, y, z = molecule[0]
+            f.write(f"ATOM  {atom_index:5d}  O   HOH {mol_idx+1:4d}    {x*10:8.3f}{y*10:8.3f}{z*10:8.3f}  1.00  0.00           O\n")
             atom_index += 1
+            # H atoms
+            for h_idx in range(1, 3):
+                x, y, z = molecule[h_idx]
+                f.write(f"ATOM  {atom_index:5d}  H   HOH {mol_idx+1:4d}    {x*10:8.3f}{y*10:8.3f}{z*10:8.3f}  1.00  0.00           H\n")
+                atom_index += 1
 
 def main():
     # Parse arguments
@@ -176,11 +202,13 @@ def main():
             prop_dist=prop_dist,
             nodesxsample=nodesxsample)
 
+        print('one_hot', one_hot)
+
         # Save positions to XYZ file
         for j in range(current_batch_size):
             xyz_coordinates = positions[j][node_mask[j].squeeze().bool()].tolist()
             pdb_file = os.path.join(args.output_dir, f'molecule_{i * args.batch_size + j}.pdb')
-            save_oxygen_pdb(xyz_coordinates, pdb_file)
+            save_pdb_from_tensor(xyz_coordinates, pdb_file)
 
 if __name__ == "__main__":
     main()

@@ -371,13 +371,13 @@ class EnVariationalDiffusion(torch.nn.Module):
 
     def unnormalize_z(self, z, node_mask):
         # Parse from z
-        x, h_cat = z[:, :, 0:self.n_dims], z[:, :, self.n_dims:self.n_dims+self.num_classes]
-        h_int = z[:, :, self.n_dims+self.num_classes:self.n_dims+self.num_classes+1]
+        x, h_cat = z[..., 0:self.n_dims], z[..., self.n_dims:self.n_dims+self.num_classes]
+        h_int = z[..., self.n_dims+self.num_classes:self.n_dims+self.num_classes+1]
         assert h_int.size(2) == self.include_charges
 
         # Unnormalize
         x, h_cat, h_int = self.unnormalize(x, h_cat, h_int, node_mask)
-        output = torch.cat([x, h_cat, h_int], dim=2)
+        output = torch.cat([x, h_cat, h_int], dim=3)
         return output
 
     def sigma_and_alpha_t_given_s(self, gamma_t: torch.Tensor, gamma_s: torch.Tensor, target_tensor: torch.Tensor):
@@ -405,7 +405,7 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         return sigma2_t_given_s, sigma_t_given_s, alpha_t_given_s
 
-    def kl_prior(self, xh, node_mask):
+    def kl_prior(self, xh, node_mask): # !!! Need changing?
         """Computes the KL between q(z1 | x) and the prior p(z1) = Normal(0, 1).
 
         This is essentially a lot of work for something that is in practice negligible in the loss. However, you
@@ -486,21 +486,28 @@ class EnVariationalDiffusion(torch.nn.Module):
         zeros = torch.zeros(size=(z0.size(0), 1), device=z0.device)
         gamma_0 = self.gamma(zeros)
         # Computes sqrt(sigma_0^2 / alpha_0^2)
-        sigma_x = self.SNR(-0.5 * gamma_0).unsqueeze(1)
+        #sigma_x = self.SNR(-0.5 * gamma_0).unsqueeze(1)
+        sigma_x = self.SNR(-0.5 * gamma_0).unsqueeze(-1).unsqueeze(-1) # [B, 1, 1, 1]
+        #print('sigma_x.shape', sigma_x.shape) # [B, 1, 1, 1]
         net_out = self.phi(z0, zeros, node_mask, edge_mask, context)
 
         # Compute mu for p(zs | zt).
         mu_x = self.compute_x_pred(net_out, z0, gamma_0)
         xh = self.sample_normal(mu=mu_x, sigma=sigma_x, node_mask=node_mask, fix_noise=fix_noise)
 
-        x = xh[:, :, :self.n_dims]
+        x = xh[..., :self.n_dims]
 
-        h_int = z0[:, :, -1:] if self.include_charges else torch.zeros(0).to(z0.device)
-        #x, h_cat, h_int = self.unnormalize(x, z0[:, :, self.n_dims:-1], h_int, node_mask)
+        h_int = z0[..., -1:] if self.include_charges else torch.zeros(0).to(z0.device)
+        #print('h_int', h_int.shape) # [0]
+        x, h_cat, h_int = self.unnormalize(x, z0[..., self.n_dims:], h_int, node_mask)
 
-        #h_cat = F.one_hot(torch.argmax(h_cat, dim=2), self.num_classes) * node_mask
-        #h_int = torch.round(h_int).long() * node_mask
-        h_cat = torch.zeros(0).to(z0.device)
+        # h_cat [B, N, 3, 2]
+        #print('h_int', h_int.shape)
+        #print('h_cat', h_cat.shape)
+        h_cat = F.one_hot(torch.argmax(h_cat, dim=-1), self.num_classes) * node_mask
+        #print('h_cat after', h_cat.shape)
+        h_int = torch.round(h_int).long() * node_mask
+        #h_cat = torch.zeros(0).to(z0.device)
         h = {'integer': h_int, 'categorical': h_cat}
         return x, h
 
@@ -747,14 +754,24 @@ class EnVariationalDiffusion(torch.nn.Module):
         sigma_t = self.sigma(gamma_t, target_tensor=zt)
 
         # Neural net prediction.
-        eps_t = self.phi(zt, t, node_mask, edge_mask, context)
+        eps_t = self.phi(zt, t, node_mask, edge_mask, context) # !!! Right shape?
+
+        #print('sigma_s.shape', sigma_s.shape) # [B, 1, 1, 1]
+        #print('sigma_t.shape', sigma_t.shape) # [B, 1, 1, 1]
+        #print('sigma_t_given_s.shape', sigma_t_given_s.shape) # [B, 1, 1, 1]
 
         # Compute mu for p(zs | zt).
         #diffusion_utils.assert_mean_zero_with_mask(zt[:, :, :self.n_dims], node_mask)
         #diffusion_utils.assert_mean_zero_with_mask(eps_t[:, :, :self.n_dims], node_mask)
-        diffusion_utils.assert_mean_zero_with_mask(zt[:, :, :, :self.n_dims], node_mask)
-        diffusion_utils.assert_mean_zero_with_mask(eps_t[:, :, :self.n_dims], node_mask)
-        mu = zt / alpha_t_given_s - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_t
+        diffusion_utils.assert_mean_zero_with_mask(zt[..., :self.n_dims], node_mask)
+        #print('eps_t.shape', eps_t.shape) # [B, N, 3, 5]
+        #print('zt.shape', zt.shape) # [B, N, 3, 5]
+        #print('node_mask.shape', node_mask.shape) # [B, N, 1, 1]
+        diffusion_utils.assert_mean_zero_with_mask(eps_t[..., :self.n_dims], node_mask)
+        mu = zt / alpha_t_given_s - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_t # eps [B, N, 5]
+
+        #print('mu.shape', mu.shape) # [B, N, 3, 5]
+        #print('sigma_t_given_s.shape', sigma_t_given_s.shape) # [B, 1, 1, 1]
 
         # Compute sigma for p(zs | zt).
         sigma = sigma_t_given_s * sigma_s / sigma_t
@@ -764,9 +781,9 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         # Project down to avoid numerical runaway of the center of gravity.
         zs = torch.cat(
-            [diffusion_utils.remove_mean_with_mask(zs[:, :, :self.n_dims],
+            [diffusion_utils.remove_mean_with_mask(zs[..., :self.n_dims],
                                                    node_mask),
-             zs[:, :, self.n_dims:]], dim=2
+             zs[..., self.n_dims:]], dim=3
         )
         return zs
 
@@ -775,12 +792,12 @@ class EnVariationalDiffusion(torch.nn.Module):
         Samples mean-centered normal noise for z_x, and standard normal noise for z_h.
         """
         z_x = utils.sample_center_gravity_zero_gaussian_with_mask(
-            size=(n_samples, n_nodes, self.n_dims), device=node_mask.device,
-            node_mask=node_mask)
+            size=(n_samples, n_nodes, 3, self.n_dims), device=node_mask.device,
+            node_mask=node_mask) # [B, N, 3, 3]
         z_h = utils.sample_gaussian_with_mask(
-            size=(n_samples, n_nodes, self.in_node_nf), device=node_mask.device,
-            node_mask=node_mask)
-        z = torch.cat([z_x, z_h], dim=2)
+            size=(n_samples, n_nodes, 3, self.in_node_nf), device=node_mask.device,
+            node_mask=node_mask) # [B, N, 3, 2]
+        z = torch.cat([z_x, z_h], dim=3)
         return z
 
     @torch.no_grad()
@@ -794,7 +811,9 @@ class EnVariationalDiffusion(torch.nn.Module):
         else:
             z = self.sample_combined_position_feature_noise(n_samples, n_nodes, node_mask)
 
-        diffusion_utils.assert_mean_zero_with_mask(z[:, :, :self.n_dims], node_mask)
+        #print('z.shape', z.shape) # [B, N, 3, 5]
+        #print('node_mask.shape', node_mask.shape) # [B, N, 1, 1]
+        diffusion_utils.assert_mean_zero_with_mask(z[..., :self.n_dims], node_mask)
 
         # Iteratively sample p(z_s | z_t) for t = 1, ..., T, with s = t - 1.
         for s in reversed(range(0, self.T)):
@@ -806,6 +825,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             z = self.sample_p_zs_given_zt(s_array, t_array, z, node_mask, edge_mask, context, fix_noise=fix_noise)
 
         # Finally sample p(x, h | z_0).
+        #print('Sample p(x, h | z_0)')
         x, h = self.sample_p_xh_given_z0(z, node_mask, edge_mask, context, fix_noise=fix_noise)
 
         diffusion_utils.assert_mean_zero_with_mask(x, node_mask)
