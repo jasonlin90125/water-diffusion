@@ -539,13 +539,12 @@ class EnVariationalDiffusion(torch.nn.Module):
         # Discrete properties are predicted directly from z_t.
         # z_h_cat = z_t[:, :, self.n_dims:-1] if self.include_charges else z_t[:, :, self.n_dims:]
         # z_h_int = z_t[:, :, -1:] if self.include_charges else torch.zeros(0).to(z_t.device)
-        z_h_cat = z_t[:, :, :, self.n_dims:-1] if self.include_charges else z_t[:, :, :, self.n_dims:]
-        z_h_int = z_t[:, :, :, -1:] if self.include_charges else torch.zeros(0).to(z_t.device)
+        z_h_cat = z_t[..., self.n_dims:-1] if self.include_charges else z_t[..., self.n_dims:]
+        z_h_int = z_t[..., -1:] if self.include_charges else torch.zeros(0).to(z_t.device)
 
         # Take only part over x.
-        eps_x = eps[:, :, :self.n_dims]
-        #net_x = net_out[:, :, :self.n_dims]
-        net_x = net_out[:, :, :, :self.n_dims]
+        eps_x = eps[..., :self.n_dims]
+        net_x = net_out[..., :self.n_dims]
 
         # Compute sigma_0 and rescale to the integer scale of the data.
         sigma_0 = self.sigma(gamma_0, target_tensor=z_t)
@@ -554,7 +553,7 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         # Computes the error for the distribution N(x | 1 / alpha_0 z_0 + sigma_0/alpha_0 eps_0, sigma_0 / alpha_0),
         # the weighting in the epsilon parametrization is exactly '1'.
-        log_p_x_given_z_without_constants = -0.5 * self.compute_error(net_x, gamma_0, eps_x.unsqueeze(2))
+        log_p_x_given_z_without_constants = -0.5 * self.compute_error(net_x, gamma_0, eps_x)
 
         # Compute delta indicator masks.
         h_integer = torch.round(h['integer'] * self.norm_values[2] + self.norm_biases[2]).long()
@@ -697,8 +696,8 @@ class EnVariationalDiffusion(torch.nn.Module):
 
             # Sample z_0 given x, h for timestep t, from q(z_t | x, h)
             eps_0 = self.sample_combined_position_feature_noise(
-                n_samples=x.size(0), n_nodes=x.size(1), node_mask=node_mask.squeeze(-1))
-            z_0 = alpha_0 * xh + sigma_0 * eps_0.unsqueeze(2)
+                n_samples=x.size(0), n_nodes=x.size(1), node_mask=node_mask)
+            z_0 = alpha_0 * xh + sigma_0 * eps_0
 
             net_out = self.phi(z_0, t_zeros, node_mask, edge_mask, context)
 
@@ -813,23 +812,45 @@ class EnVariationalDiffusion(torch.nn.Module):
 
     def sample_combined_position_feature_noise(self, n_samples, n_nodes, node_mask):
         """
-        Samples mean-centered normal noise for z_x, and standard normal noise for z_h.
+        Samples noise such that:
+        1. All atoms (O, H, H) in a molecule get the *same* translational noise vector (eps_x).
+        2. The average translational noise across the cluster (masked molecules) is zero (CoG preserved).
+        3. Feature noise (eps_h) is sampled independently per atom.
+        node_mask shape: [B, N, 1, 1]
         """
-        z_shape = (n_samples, n_nodes, 3, self.n_dims + self.num_classes) # Typically [B, N, 3, 5]
-        z_noise = utils.sample_gaussian(size=z_shape, device=node_mask.device)
+        # 1. Sample base *molecular* translational noise
+        mol_zx_shape = (n_samples, n_nodes, 1, self.n_dims)  # Shape [B, N, 1, 3]
+        mol_zx_noise = utils.sample_gaussian(size=mol_zx_shape, device=node_mask.device)
 
-        expanded_mask = node_mask.expand(-1, -1, 3, self.n_dims + self.num_classes)
-        z_noise = z_noise * expanded_mask
+        # 2. Apply mask to the molecular noise
+        mol_zx_noise_masked = mol_zx_noise * node_mask  # Still shape [B, N, 1, 3]
 
-        eps_x = z_noise[..., :self.n_dims] # [B, N, 3, 3]
-        eps_x_projected = utils.remove_mean_with_mask(eps_x, node_mask)
+        # 3. Project the *masked molecular* noise to have zero CoG across the cluster
+        # remove_mean_with_mask works correctly for this input shape.
+        mol_zx_projected = utils.remove_mean_with_mask(mol_zx_noise_masked, node_mask) # Shape [B, N, 1, 3]
 
-        eps_h = z_noise[..., self.n_dims:] # [B, N, 3, 2]
+        # 4. Expand the *projected* molecular noise to the atom dimension
+        eps_x = mol_zx_projected.expand(-1, -1, 3, -1)  # Shape [B, N, 3, 3]
+        # Now, atoms within the same molecule have identical *projected* noise.
 
-        z = torch.cat([eps_x_projected, eps_h], dim=3) # Shape: [B, N, 3, 5]
+        # 5. Sample independent feature noise per atom
+        zh_shape = (n_samples, n_nodes, 3, self.num_classes) # Shape [B, N, 3, 2]
+        zh_noise = utils.sample_gaussian(size=zh_shape, device=node_mask.device)
 
-        utils.assert_correctly_masked(z, expanded_mask) # Check masking still holds
-        utils.assert_mean_zero_with_mask(z[..., :self.n_dims], node_mask) # Check CoG
+        # 6. Apply mask to feature noise
+        expanded_mask_h = node_mask.expand(-1, -1, 3, self.num_classes) # Shape [B, N, 3, 2]
+        eps_h = zh_noise * expanded_mask_h # Shape [B, N, 3, 2]
+
+        # 7. Concatenate projected coordinate noise and feature noise
+        z = torch.cat([eps_x, eps_h], dim=3) # Shape: [B, N, 3, 5]
+
+        # 8. Final Checks
+        full_expanded_mask = node_mask.expand_as(z)
+        utils.assert_correctly_masked(z, full_expanded_mask)
+        # Check CoG of the coordinate part again (should hold by construction)
+        utils.assert_mean_zero_with_mask(z[..., :self.n_dims], node_mask)
+
+        return z
 
         '''
         z_x = utils.sample_center_gravity_zero_gaussian_with_mask(
@@ -840,8 +861,6 @@ class EnVariationalDiffusion(torch.nn.Module):
             node_mask=node_mask) # [B, N, 2] this is probably wrong, may have to be [B, N, 3, 2]
         z = torch.cat([z_x, z_h], dim=2) # change to dim=3 if expand
         '''
-
-        return z
 
     @torch.no_grad()
     def sample(self, n_samples, n_nodes, node_mask, edge_mask, context, fix_noise=False):

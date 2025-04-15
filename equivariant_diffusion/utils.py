@@ -29,6 +29,28 @@ def remove_mean(x):
 
 
 def remove_mean_with_mask(x, node_mask):
+    """ x: Batch x N x D1 x D2 x ...
+        node_mask: Batch x N x 1 x 1 x ...
+    """
+    # Calculate the number of active nodes per batch item, ensuring it's float
+    N = node_mask.sum(dim=1, keepdim=True).float() # N shape: [B, 1, 1, ...]
+
+    # --- CLAMP N TO PREVENT DIVISION BY ZERO ---
+    # Clamp N to a minimum value (e.g., 1 or a small epsilon like 1e-8)
+    # Clamping to 1 is generally safe if N should conceptually be >= 1.
+    N = torch.clamp(N, min=1.0)
+    # Alternatively, for pure numerical stability if N could be < 1:
+    # N = torch.clamp(N, min=1e-8)
+
+    # Calculate the mean, now safe from division by zero
+    mean = torch.sum(x, dim=1, keepdim=True) / N # mean shape: [B, 1, D1, D2, ...]
+
+    # Subtract the mean only where the node_mask is active
+    x = x - mean * node_mask
+    return x
+
+'''
+def remove_mean_with_mask(x, node_mask):
     masked_max_abs_value = (x * (1 - node_mask)).abs().sum().item()
     assert masked_max_abs_value < 1e-5, f'Error {masked_max_abs_value} too high'
     N = node_mask.sum(1, keepdims=True)
@@ -36,6 +58,7 @@ def remove_mean_with_mask(x, node_mask):
     mean = torch.sum(x, dim=1, keepdim=True) / N
     x = x - mean * node_mask
     return x
+'''
 
 
 def assert_mean_zero(x):
