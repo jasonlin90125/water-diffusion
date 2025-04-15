@@ -22,7 +22,7 @@ echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
 nvidia-smi --query-gpu=memory.total,memory.used --format=csv
 
 python main_water.py \
-    --n_epochs 1000 \
+    --n_epochs 400 \
     --exp_name edm_water \
     --n_stability_samples 1000 \
     --diffusion_noise_schedule polynomial_2 \
