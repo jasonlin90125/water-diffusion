@@ -71,7 +71,7 @@ def sample(args, device, generative_model, dataset_info,
     else:
         raise ValueError(args.probabilistic_model)
 
-    print('one_hot.shape', one_hot.shape)
+    #print('one_hot.shape', one_hot.shape)
     #print('charges', charges.shape)
     #print('x', x.shape)
     #print('node_mask', node_mask.shape)
@@ -202,7 +202,7 @@ def main():
             prop_dist=prop_dist,
             nodesxsample=nodesxsample)
 
-        print('one_hot', one_hot)
+        print('positions.shape', positions.shape)
 
         # Save positions to XYZ file
         for j in range(current_batch_size):
